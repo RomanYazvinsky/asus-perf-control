@@ -1,0 +1,88 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build Rust Backend",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "--release"],
+      "options": {
+        "cwd": "${workspaceFolder}/rust_core"
+      },
+      "problemMatcher": ["$rustc"],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Build Rust Daemon",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "--release"],
+      "options": {
+        "cwd": "${workspaceFolder}/rust_daemon"
+      },
+      "problemMatcher": ["$rustc"],
+      "group": "build"
+    },
+    {
+      "label": "Flutter: Run (with Rust build)",
+      "dependsOn": ["Build Rust Backend"],
+      "type": "shell",
+      "command": "flutter",
+      "args": ["run", "-d", "linux"],
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": true,
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Flutter: Build Release (with Rust)",
+      "dependsOn": ["Build Rust Backend"],
+      "type": "shell",
+      "command": "flutter",
+      "args": ["build", "linux", "--release"],
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "Check Daemon Installation",
+      "type": "shell",
+      "command": "${workspaceFolder}/.vscode/check-daemon.sh",
+      "problemMatcher": [],
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Build and Check All",
+      "dependsOn": ["Build Rust Backend", "Check Daemon Installation"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "Clean All",
+      "type": "shell",
+      "command": "make",
+      "args": ["clean"],
+      "problemMatcher": []
+    }
+  ]
+}

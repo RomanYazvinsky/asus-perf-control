@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Flutter: Run (Auto-build Rust)",
+      "type": "dart",
+      "request": "launch",
+      "program": "lib/main.dart",
+      "preLaunchTask": "Build and Check All",
+      "args": ["-d", "linux"]
+    },
+    {
+      "name": "Flutter: Run (Debug)",
+      "type": "dart",
+      "request": "launch",
+      "program": "lib/main.dart",
+      "preLaunchTask": "Build Rust Backend",
+      "args": ["-d", "linux", "--debug"]
+    },
+    {
+      "name": "Flutter: Profile",
+      "type": "dart",
+      "request": "launch",
+      "program": "lib/main.dart",
+      "preLaunchTask": "Build Rust Backend",
+      "flutterMode": "profile"
+    }
+  ]
+}

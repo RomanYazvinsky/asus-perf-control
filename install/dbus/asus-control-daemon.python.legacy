@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""
+ASUS Linux Control D-Bus Daemon
+
+Runs as root, provides D-Bus interface for controlling ASUS hardware.
+Authorization is handled by polkit.
+"""
+
+import dbus
+import dbus.service
+import dbus.mainloop.glib
+from gi.repository import GLib
+import os
+import sys
+
+THERMAL_POLICY_PATH = "/sys/devices/platform/asus-nb-wmi/throttle_thermal_policy"
+CHARGE_LIMIT_PATH = "/sys/class/power_supply/BAT0/charge_control_end_threshold"
+
+BUS_NAME = "com.asuslinuxcontrol.Daemon"
+OBJECT_PATH = "/com/asuslinuxcontrol/Daemon"
+INTERFACE = "com.asuslinuxcontrol.Daemon"
+
+POLKIT_AUTHORITY = "org.freedesktop.PolicyKit1"
+POLKIT_PATH = "/org/freedesktop/PolicyKit1/Authority"
+POLKIT_IFACE = "org.freedesktop.PolicyKit1.Authority"
+
+
+class AsusControlDaemon(dbus.service.Object):
+    def __init__(self, bus):
+        super().__init__(bus, OBJECT_PATH)
+        self.bus = bus
+
+    def _check_authorization(self, sender, action_id):
+        """Check polkit authorization for the sender."""
+        try:
+            # Get sender's PID
+            dbus_obj = self.bus.get_object('org.freedesktop.DBus', '/org/freedesktop/DBus')
+            pid = dbus_obj.GetConnectionUnixProcessID(sender, dbus_interface='org.freedesktop.DBus')
+
+            # Call polkit to check authorization
+            polkit_obj = self.bus.get_object(POLKIT_AUTHORITY, POLKIT_PATH)
+            polkit_iface = dbus.Interface(polkit_obj, POLKIT_IFACE)
+
+            subject = ('unix-process', {
+                'pid': dbus.UInt32(pid, variant_level=1),
+                'start-time': dbus.UInt64(0, variant_level=1),
+            })
+
+            result = polkit_iface.CheckAuthorization(
+                subject,
+                action_id,
+                {},  # details
+                dbus.UInt32(1),  # flags: AllowUserInteraction
+                '',  # cancellation_id
+                timeout=600
+            )
+
+            # result is (is_authorized, is_challenge, details)
+            is_authorized = result[0]
+            
+            if not is_authorized:
+                raise dbus.DBusException(
+                    f"Authorization required for {action_id}",
+                    name="org.freedesktop.PolicyKit1.Error.NotAuthorized"
+                )
+
+        except dbus.DBusException as e:
+            if "NotAuthorized" in str(e):
+                raise
+            # If polkit check fails for other reasons, deny by default
+            raise dbus.DBusException(
+                f"Failed to check authorization: {e}",
+                name="com.asuslinuxcontrol.Error.AuthCheckFailed"
+            )
+
+    @dbus.service.method(INTERFACE,
+                         in_signature='i', out_signature='b',
+                         sender_keyword='sender')
+    def SetPerformanceMode(self, mode, sender=None):
+        """Set thermal policy. 0=Silent, 1=Balanced, 2=Turbo."""
+        # Check authorization via polkit
+        self._check_authorization(sender, 'com.asuslinuxcontrol.set-performance-mode')
+
+        if mode < 0 or mode > 2:
+            raise dbus.DBusException(f"Invalid mode: {mode}. Must be 0, 1, or 2.")
+
+        if not os.path.exists(THERMAL_POLICY_PATH):
+            raise dbus.DBusException(
+                "ASUS WMI thermal policy interface not found. "
+                "Ensure asus-nb-wmi driver is loaded."
+            )
+
+        try:
+            with open(THERMAL_POLICY_PATH, 'w') as f:
+                f.write(str(mode))
+            return True
+        except IOError as e:
+            raise dbus.DBusException(f"Failed to write thermal policy: {e}")
+
+    @dbus.service.method(INTERFACE,
+                         in_signature='', out_signature='i',
+                         sender_keyword='sender')
+    def GetPerformanceMode(self, sender=None):
+        """Read current thermal policy. No authorization required for reading."""
+        if not os.path.exists(THERMAL_POLICY_PATH):
+            raise dbus.DBusException(
+                "ASUS WMI thermal policy interface not found. "
+                "Ensure asus-nb-wmi driver is loaded."
+            )
+
+        try:
+            with open(THERMAL_POLICY_PATH, 'r') as f:
+                return int(f.read().strip())
+        except (IOError, ValueError) as e:
+            raise dbus.DBusException(f"Failed to read thermal policy: {e}")
+
+    @dbus.service.method(INTERFACE,
+                         in_signature='i', out_signature='b',
+                         sender_keyword='sender')
+    def SetBatteryChargeLimit(self, limit, sender=None):
+        """Set battery charge limit (20-100)."""
+        # Check authorization via polkit
+        self._check_authorization(sender, 'com.asuslinuxcontrol.set-battery-limit')
+
+        if limit < 20 or limit > 100:
+            raise dbus.DBusException(f"Invalid limit: {limit}. Must be 20-100.")
+
+        if not os.path.exists(CHARGE_LIMIT_PATH):
+            raise dbus.DBusException("Battery charge limit interface not found.")
+
+        try:
+            with open(CHARGE_LIMIT_PATH, 'w') as f:
+                f.write(str(limit))
+            return True
+        except IOError as e:
+            raise dbus.DBusException(f"Failed to set charge limit: {e}")
+
+    @dbus.service.method(INTERFACE,
+                         in_signature='', out_signature='i',
+                         sender_keyword='sender')
+    def GetBatteryChargeLimit(self, sender=None):
+        """Read current battery charge limit. No authorization required for reading."""
+        if not os.path.exists(CHARGE_LIMIT_PATH):
+            raise dbus.DBusException("Battery charge limit interface not found.")
+
+        try:
+            with open(CHARGE_LIMIT_PATH, 'r') as f:
+                return int(f.read().strip())
+        except (IOError, ValueError) as e:
+            raise dbus.DBusException(f"Failed to read charge limit: {e}")
+
+
+def main():
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
+
+    try:
+        bus_name = dbus.service.BusName(BUS_NAME, bus, do_not_queue=True)
+    except dbus.exceptions.NameExistsException:
+        print(f"Service {BUS_NAME} already running.", file=sys.stderr)
+        sys.exit(1)
+
+    daemon = AsusControlDaemon(bus)
+    print(f"ASUS Control Daemon started on {BUS_NAME}")
+    print("Polkit authorization is ENABLED for write operations")
+
+    loop = GLib.MainLoop()
+    try:
+        loop.run()
+    except KeyboardInterrupt:
+        print("\nShutting down daemon...")
+        sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
