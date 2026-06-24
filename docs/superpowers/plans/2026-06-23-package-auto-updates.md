@@ -276,7 +276,7 @@ Extend Rust tests for:
 - DNF5 JSON output with package `asus-linux-control` maps to `available`.
 - DNF4 check output with `asus-linux-control.x86_64` maps to `available`.
 - `dnf5` exit code `0` maps to `upToDate`; exit code `100` with matching package maps to `available`.
-- pacman `asus-linux-control 1.0.0-1 -> 1.0.1-1` maps to `available`.
+- pacman `asus-linux-control 0.0.1-1 -> 0.0.2-1` maps to `available`.
 - rpm-ostree check output indicating no changes maps to `upToDate`.
 - lock, signature, network, and missing repo text map to the design error codes.
 

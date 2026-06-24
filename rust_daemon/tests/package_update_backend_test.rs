@@ -118,8 +118,8 @@ fn serialized_status_uses_versioned_schema() {
     let status = UpdateStatus {
         backend: PackageBackend::FedoraDnf5,
         state: UpdateState::Available,
-        installed_version: Some("1.0.0".to_string()),
-        available_version: Some("1.0.1".to_string()),
+        installed_version: Some("0.0.1".to_string()),
+        available_version: Some("0.0.2".to_string()),
         reboot_required: Some(false),
         summary: "Update available".to_string(),
         error_code: None,
@@ -132,8 +132,8 @@ fn serialized_status_uses_versioned_schema() {
     assert_eq!(value["schemaVersion"], 1);
     assert_eq!(value["backend"], "fedora-dnf5");
     assert_eq!(value["state"], "available");
-    assert_eq!(value["installedVersion"], "1.0.0");
-    assert_eq!(value["availableVersion"], "1.0.1");
+    assert_eq!(value["installedVersion"], "0.0.1");
+    assert_eq!(value["availableVersion"], "0.0.2");
     assert_eq!(value["rebootRequired"], false);
     assert_eq!(value["summary"], "Update available");
     assert!(value["errorCode"].is_null());
@@ -144,26 +144,26 @@ fn serialized_status_uses_versioned_schema() {
 fn dnf5_json_with_matching_package_maps_to_available() {
     let status = parse_check_output(
         PackageBackend::FedoraDnf5,
-        r#"{"packages":[{"name":"asus-linux-control","evr":"1.0.1-1.fc40"}]}"#,
+        r#"{"packages":[{"name":"asus-linux-control","evr":"0.0.2-1.fc40"}]}"#,
         "",
         100,
     );
 
     assert_eq!(status.state, UpdateState::Available);
-    assert_eq!(status.available_version.as_deref(), Some("1.0.1-1.fc40"));
+    assert_eq!(status.available_version.as_deref(), Some("0.0.2-1.fc40"));
 }
 
 #[test]
 fn dnf4_check_output_with_matching_package_maps_to_available() {
     let status = parse_check_output(
         PackageBackend::FedoraDnf,
-        "asus-linux-control.x86_64 1.0.1-1.fc40 updates\n",
+        "asus-linux-control.x86_64 0.0.2-1.fc40 updates\n",
         "",
         100,
     );
 
     assert_eq!(status.state, UpdateState::Available);
-    assert_eq!(status.available_version.as_deref(), Some("1.0.1-1.fc40"));
+    assert_eq!(status.available_version.as_deref(), Some("0.0.2-1.fc40"));
 }
 
 #[test]
@@ -177,14 +177,14 @@ fn dnf_exit_code_zero_maps_to_up_to_date() {
 fn pacman_update_line_maps_to_available() {
     let status = parse_check_output(
         PackageBackend::ArchPacman,
-        "asus-linux-control 1.0.0-1 -> 1.0.1-1\n",
+        "asus-linux-control 0.0.1-1 -> 0.0.2-1\n",
         "",
         0,
     );
 
     assert_eq!(status.state, UpdateState::Available);
-    assert_eq!(status.installed_version.as_deref(), Some("1.0.0-1"));
-    assert_eq!(status.available_version.as_deref(), Some("1.0.1-1"));
+    assert_eq!(status.installed_version.as_deref(), Some("0.0.1-1"));
+    assert_eq!(status.available_version.as_deref(), Some("0.0.2-1"));
 }
 
 #[test]

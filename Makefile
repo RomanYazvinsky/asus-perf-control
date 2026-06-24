@@ -1,7 +1,7 @@
 .PHONY: all build-rust build-flutter build-artifacts source-tarball check-rpmbuild check-makepkg package-rpm package-arch package-all run clean help
 
 PACKAGE_NAME := asus-linux-control
-PACKAGE_VERSION := 1.0.0
+PACKAGE_VERSION := 0.0.1
 DIST_DIR := dist
 SOURCE_TARBALL := $(DIST_DIR)/$(PACKAGE_NAME)-$(PACKAGE_VERSION).tar.gz
 RPMBUILD_DIR := $(DIST_DIR)/rpmbuild

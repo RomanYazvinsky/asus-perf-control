@@ -114,6 +114,15 @@ flutter run -d linux
 These commands build local binaries, the Flutter Linux bundle, and native
 package artifacts for the supported package ecosystems.
 
+## Versioning
+
+Project releases use semantic versioning. The current release version is
+`0.0.1`; Flutter build metadata is tracked as `0.0.1+1`.
+
+Release tags use the `v<semver>` format, for example `v0.0.1`. Keep Flutter,
+RPM, pacman, and platform fallback metadata synchronized when bumping a release.
+See `docs/release-versioning.md` for the full rules.
+
 ### Debug build and run
 
 ```bash

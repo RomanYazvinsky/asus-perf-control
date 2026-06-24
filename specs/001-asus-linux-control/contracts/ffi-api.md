@@ -528,7 +528,7 @@ pub struct PermissionStatus {
 
 ## Contract Versioning
 
-**Current Version**: 1.0.0
+**Current Version**: 0.0.1
 
 ### Breaking Changes Policy
 - Major version bump required for:

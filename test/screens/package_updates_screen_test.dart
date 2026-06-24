@@ -26,8 +26,8 @@ void main() {
 
     expect(find.text('Package Updates'), findsOneWidget);
     expect(find.text('fedora-dnf5'), findsOneWidget);
-    expect(find.text('1.0.0'), findsOneWidget);
-    expect(find.text('1.0.1'), findsOneWidget);
+    expect(find.text('0.0.1'), findsOneWidget);
+    expect(find.text('0.0.2'), findsOneWidget);
     expect(find.text('Install Update'), findsOneWidget);
   });
 
@@ -124,8 +124,8 @@ void main() {
 PackageUpdateStatus status({
   PackageUpdateBackend backend = PackageUpdateBackend.fedoraDnf5,
   PackageUpdateRunState state = PackageUpdateRunState.available,
-  String? installedVersion = '1.0.0',
-  String? availableVersion = '1.0.1',
+  String? installedVersion = '0.0.1',
+  String? availableVersion = '0.0.2',
   bool? rebootRequired = false,
   PackageUpdateErrorCode? errorCode,
 }) => PackageUpdateStatus(

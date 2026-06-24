@@ -1,5 +1,5 @@
 Name:           asus-linux-control
-Version:        1.0.0
+Version:        0.0.1
 Release:        1%{?dist}
 Summary:        ASUS Linux Control GUI and privileged daemon
 
@@ -112,5 +112,5 @@ echo "Run 'sudo systemctl enable --now asus-control-daemon.service' to start ASU
 /usr/lib/udev/rules.d/99-asus-control.rules
 
 %changelog
-* Tue Jun 23 2026 ASUS Linux Control <maintainers@example.invalid> - 1.0.0-1
-- Initial native package split.
+* Wed Jun 24 2026 ASUS Linux Control <maintainers@example.invalid> - 0.0.1-1
+- Initial semantic-versioned package release.

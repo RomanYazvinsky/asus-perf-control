@@ -1,6 +1,6 @@
 pkgbase=asus-linux-control
 pkgname=('asus-linux-control' 'asus-linux-control-gui' 'asus-linux-control-daemon')
-pkgver=1.0.0
+pkgver=0.0.1
 pkgrel=1
 pkgdesc='ASUS Linux Control GUI and privileged daemon'
 arch=('x86_64')
