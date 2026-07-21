@@ -221,12 +221,13 @@ void main() {
       await _pumpUi(tester);
 
       expect(find.text('CPU Boost Mode'), findsOneWidget);
-      expect(find.text('Disabled'), findsOneWidget);
+      expect(find.text('Off'), findsOneWidget);
       expect(find.text('Efficient'), findsOneWidget);
-      expect(find.text('Efficient Enabled'), findsOneWidget);
-      expect(find.text('Enabled'), findsOneWidget);
-      expect(find.text('Efficient Aggressive'), findsOneWidget);
+      expect(find.text('Balanced'), findsWidgets);
       expect(find.text('Aggressive'), findsOneWidget);
+      expect(find.text('Efficient Enabled'), findsNothing);
+      expect(find.text('Enabled'), findsNothing);
+      expect(find.text('Efficient Aggressive'), findsNothing);
     });
 
     testWidgets('current CPU boost mode is selected', (tester) async {
@@ -236,11 +237,11 @@ void main() {
       await tester.pumpWidget(_buildHome(bloc, cpuBoostBloc: cpuBoostBloc));
       await _pumpUi(tester);
 
-      expect(find.text('Responsive efficient boost'), findsOneWidget);
+      expect(find.text('Responsive boost for normal use'), findsOneWidget);
       expect(find.byIcon(Icons.check_circle), findsWidgets);
     });
 
-    testWidgets('tapping Disabled dispatches CPU boost mode change', (
+    testWidgets('tapping Off dispatches disabled CPU boost mode', (
       tester,
     ) async {
       final bloc = buildBloc();
@@ -249,12 +250,43 @@ void main() {
       await tester.pumpWidget(_buildHome(bloc, cpuBoostBloc: cpuBoostBloc));
       await _pumpUi(tester);
 
-      await tester.scrollUntilVisible(find.text('Disabled'), 300);
-      await tester.tap(find.text('Disabled'));
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('cpu_boost_off_button')),
+        300,
+      );
+      await tester.tap(find.byKey(const Key('cpu_boost_off_button')));
       await _pumpUi(tester);
 
       verify(
         () => mockCpuBoostService.setCpuBoostMode(CpuBoostMode.disabled),
+      ).called(1);
+    });
+
+    testWidgets('tapping Balanced dispatches efficient aggressive boost mode', (
+      tester,
+    ) async {
+      when(
+        () => mockCpuBoostService.setCpuBoostMode(
+          CpuBoostMode.efficientAggressive,
+        ),
+      ).thenAnswer((_) async {});
+      final bloc = buildBloc();
+      final cpuBoostBloc = buildCpuBoostBloc();
+
+      await tester.pumpWidget(_buildHome(bloc, cpuBoostBloc: cpuBoostBloc));
+      await _pumpUi(tester);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('cpu_boost_balanced_button')),
+        300,
+      );
+      await tester.tap(find.byKey(const Key('cpu_boost_balanced_button')));
+      await _pumpUi(tester);
+
+      verify(
+        () => mockCpuBoostService.setCpuBoostMode(
+          CpuBoostMode.efficientAggressive,
+        ),
       ).called(1);
     });
 

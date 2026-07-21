@@ -16,9 +16,7 @@ class FfiSteamInputService implements SteamInputService {
       StreamController<UiInputEvent>.broadcast();
   Timer? _timer;
 
-  FfiSteamInputService({
-    this.pollInterval = const Duration(milliseconds: 16),
-  });
+  FfiSteamInputService({this.pollInterval = const Duration(milliseconds: 16)});
 
   @override
   Stream<UiInputEvent> get events => _events.stream;

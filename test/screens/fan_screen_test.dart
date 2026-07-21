@@ -10,7 +10,10 @@ import 'package:flutter_application_1/blocs/fan/fan_state.dart';
 import 'package:flutter_application_1/screens/fan_screen.dart';
 import 'package:flutter_application_1/services/asusd_fan_client.dart';
 import 'package:flutter_application_1/services/fan_service.dart';
+import 'package:flutter_application_1/services/input/steam_input_service.dart';
+import 'package:flutter_application_1/services/input/ui_input_command.dart';
 import 'package:flutter_application_1/widgets/fan/fan_curve_editor.dart';
+import 'package:flutter_application_1/widgets/input/gamepad_input_scope.dart';
 
 class _NoopFanService implements IFanService {
   @override
@@ -86,14 +89,17 @@ FanLoaded _loadedState({
   bool dynamicEngineRunning = false,
   PerfProfile selectedProfile = PerfProfile.balanced,
   FanProfileCurves? asusdCurves,
+  bool includeGpu = false,
 }) {
   return FanLoaded(
     capabilities: FanCapabilities(
       fans: [
         FanInfo(id: 'cpu', label: 'CPU Fan', hasRpm: true, hasCurve: true),
+        if (includeGpu)
+          FanInfo(id: 'gpu', label: 'GPU Fan', hasRpm: true, hasCurve: true),
       ],
     ),
-    fanRpms: const {FanId.cpu: 2200},
+    fanRpms: {FanId.cpu: 2200, if (includeGpu) FanId.gpu: 1800},
     asusdCurves:
         asusdCurves ??
         {
@@ -108,7 +114,10 @@ FanLoaded _loadedState({
         },
     selectedFan: FanId.cpu,
     selectedProfile: selectedProfile,
-    controlModes: {FanId.cpu: cpuMode},
+    controlModes: {
+      FanId.cpu: cpuMode,
+      if (includeGpu) FanId.gpu: FanControlMode.asusctlCurve,
+    },
     dynamicEngineRunning: dynamicEngineRunning,
   );
 }
@@ -210,6 +219,63 @@ void main() {
 
       expect(bloc.recordedEvents, hasLength(1));
       expect(bloc.recordedEvents.single, isA<UpdateDynamicCurve>());
+    });
+
+    testWidgets('fan screen exposes apply button as focusable control', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: FanTabContent(
+              fanId: FanId.cpu,
+              state: _loadedState(cpuMode: FanControlMode.asusctlCurve),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final apply = find.widgetWithText(ElevatedButton, 'Apply');
+      expect(apply, findsOneWidget);
+      expect(Focus.of(tester.element(apply)).canRequestFocus, isTrue);
+    });
+
+    testWidgets('controller next tab command switches fan tabs', (
+      tester,
+    ) async {
+      final service = FakeSteamInputService();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GamepadInputScope(
+            service: service,
+            child: Scaffold(
+              body: FanContent(state: _loadedState(includeGpu: true)),
+            ),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+
+      final detector = tester.widget<FocusableActionDetector>(
+        find.byKey(const ValueKey('fan-curve-editor-focus')).first,
+      );
+      detector.focusNode!.requestFocus();
+      await tester.pump();
+
+      expect(find.text('CPU Fan'), findsWidgets);
+      expect(find.text('GPU Fan'), findsOneWidget);
+      expect(find.text('1800 RPM'), findsNothing);
+
+      service.emit(UiInputCommand.nextTab);
+      await tester.pumpAndSettle();
+
+      final tabBar = tester.widget<TabBar>(
+        find.byKey(const ValueKey('fan-tabs')),
+      );
+      expect(tabBar.controller!.index, 1);
+      expect(find.text('1800 RPM'), findsOneWidget);
     });
 
     testWidgets('uses selected profile curve without relying on list index', (

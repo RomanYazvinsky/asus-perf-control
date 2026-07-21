@@ -5,9 +5,11 @@ import '../blocs/fan/fan_event.dart';
 import '../blocs/fan/fan_state.dart';
 import '../services/fan_service.dart';
 import '../services/asusd_fan_client.dart';
+import '../services/input/ui_input_command.dart';
 import '../widgets/fan/fan_curve_editor.dart';
 import '../widgets/copyable_alert.dart';
 import '../widgets/profile_tab_bar.dart';
+import '../widgets/input/gamepad_input_scope.dart';
 
 class FanScreen extends StatelessWidget {
   const FanScreen({super.key});
@@ -172,84 +174,120 @@ class _FanContentState extends State<FanContent>
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Temperature display
-        Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              Column(
-                children: [
-                  const Text('CPU', style: TextStyle(fontSize: 12)),
-                  Text(
-                    '${widget.state.cpuTempC}°C',
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-              Column(
-                children: [
-                  const Text('GPU', style: TextStyle(fontSize: 12)),
-                  Text(
-                    '${widget.state.gpuTempC}°C',
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-        // Dynamic engine toggle
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('Dynamic Engine'),
-              Switch(
-                value: widget.state.dynamicEngineRunning,
-                onChanged: _toggleDynamicEngine,
-              ),
-            ],
-          ),
-        ),
-        ProfileTabBar(
-          selectedMode: _modeFromProfile(widget.state.selectedProfile),
-          onModeSelected: (mode) {
-            context.read<FanBloc>().add(SelectProfile(_profileFromMode(mode)));
+    return Actions(
+      actions: {
+        UiInputIntent: CallbackAction<UiInputIntent>(
+          onInvoke: (intent) {
+            switch (intent.command) {
+              case UiInputCommand.nextTab:
+                final next = (_tabController.index + 1) % _tabController.length;
+                _tabController.animateTo(next);
+              case UiInputCommand.previousTab:
+                final previous =
+                    (_tabController.index - 1 + _tabController.length) %
+                    _tabController.length;
+                _tabController.animateTo(previous);
+              case UiInputCommand.focusUp:
+              case UiInputCommand.focusDown:
+              case UiInputCommand.focusLeft:
+              case UiInputCommand.focusRight:
+              case UiInputCommand.activate:
+              case UiInputCommand.back:
+              case UiInputCommand.apply:
+              case UiInputCommand.curvePreviousPoint:
+              case UiInputCommand.curveNextPoint:
+              case UiInputCommand.curveSpeedUp:
+              case UiInputCommand.curveSpeedDown:
+              case UiInputCommand.curveTempLeft:
+              case UiInputCommand.curveTempRight:
+                break;
+            }
+            return null;
           },
         ),
+      },
+      child: Column(
+        children: [
+          // Temperature display
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                Column(
+                  children: [
+                    const Text('CPU', style: TextStyle(fontSize: 12)),
+                    Text(
+                      '${widget.state.cpuTempC}°C',
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                Column(
+                  children: [
+                    const Text('GPU', style: TextStyle(fontSize: 12)),
+                    Text(
+                      '${widget.state.gpuTempC}°C',
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          // Dynamic engine toggle
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Dynamic Engine'),
+                Switch(
+                  value: widget.state.dynamicEngineRunning,
+                  onChanged: _toggleDynamicEngine,
+                ),
+              ],
+            ),
+          ),
+          ProfileTabBar(
+            selectedMode: _modeFromProfile(widget.state.selectedProfile),
+            onModeSelected: (mode) {
+              context.read<FanBloc>().add(
+                SelectProfile(_profileFromMode(mode)),
+              );
+            },
+          ),
 
-        // Fan tab bar
-        TabBar(
-          controller: _tabController,
-          tabs: widget.state.capabilities.fans.map((fan) {
-            return Tab(text: fan.label);
-          }).toList(),
-        ),
-
-        // TabBarView per fan
-        Expanded(
-          child: TabBarView(
+          // Fan tab bar
+          TabBar(
+            key: const ValueKey('fan-tabs'),
             controller: _tabController,
-            children: widget.state.capabilities.fans.asMap().entries.map((
-              entry,
-            ) {
-              final fan = entry.value;
-              final fanId = fan.id == 'cpu' ? FanId.cpu : FanId.gpu;
-              return FanTabContent(fanId: fanId, state: widget.state);
+            tabs: widget.state.capabilities.fans.map((fan) {
+              return Tab(text: fan.label);
             }).toList(),
           ),
-        ),
-      ],
+
+          // TabBarView per fan
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: widget.state.capabilities.fans.asMap().entries.map((
+                entry,
+              ) {
+                final fan = entry.value;
+                final fanId = fan.id == 'cpu' ? FanId.cpu : FanId.gpu;
+                return FanTabContent(fanId: fanId, state: widget.state);
+              }).toList(),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

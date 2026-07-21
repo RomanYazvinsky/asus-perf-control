@@ -3,6 +3,8 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import '../../services/asusd_fan_client.dart';
+import '../../services/input/ui_input_command.dart';
+import '../input/gamepad_input_scope.dart';
 
 class FanCurveEditor extends StatefulWidget {
   final List<FanCurvePoint> curve;
@@ -27,11 +29,19 @@ class FanCurveEditor extends StatefulWidget {
 class _FanCurveEditorState extends State<FanCurveEditor> {
   List<FanCurvePoint> _points = [];
   int? _draggedPointIndex;
+  int? _selectedPointIndex;
+  final FocusNode _focusNode = FocusNode(debugLabel: 'FanCurveEditor');
 
   @override
   void initState() {
     super.initState();
     _points = List.from(widget.curve);
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
   }
 
   @override
@@ -56,229 +66,321 @@ class _FanCurveEditorState extends State<FanCurveEditor> {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return Actions(
+      actions: {
+        UiInputIntent: _FanCurveInputAction(_handleUiInputCommand, context),
+      },
+      child: FocusableActionDetector(
+        key: const ValueKey('fan-curve-editor-focus'),
+        focusNode: _focusNode,
+        onFocusChange: (focused) {
+          if (focused && _selectedPointIndex == null && _points.isNotEmpty) {
+            setState(() => _selectedPointIndex = 0);
+          }
+        },
+        child: Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Fan Curve (8 points)',
-                  style: Theme.of(context).textTheme.titleLarge,
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Fan Curve (8 points)',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    if (!widget.readOnly)
+                      ElevatedButton(
+                        onPressed: () {
+                          widget.onCurveChanged?.call(_points);
+                        },
+                        child: const Text('Apply'),
+                      ),
+                  ],
                 ),
-                if (!widget.readOnly)
-                  ElevatedButton(
-                    onPressed: () {
-                      widget.onCurveChanged?.call(_points);
-                    },
-                    child: const Text('Apply'),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 300,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  return GestureDetector(
-                    onPanStart: !widget.readOnly
-                        ? (details) {
-                            RenderBox box =
-                                context.findRenderObject() as RenderBox;
-                            Offset localPosition = box.globalToLocal(
-                              details.globalPosition,
-                            );
-                            final x = _convertToChartX(
-                              localPosition.dx,
-                              constraints.maxWidth,
-                            );
-                            final y = _convertToChartY(
-                              localPosition.dy,
-                              constraints.maxHeight,
-                            );
-                            _draggedPointIndex = _findNearestPointIndex(x, y);
-                            if (_draggedPointIndex != null) {
-                              setState(() {});
-                            }
-                          }
-                        : null,
-                    onPanUpdate: !widget.readOnly
-                        ? (details) {
-                            if (_draggedPointIndex != null) {
-                              RenderBox box =
-                                  context.findRenderObject() as RenderBox;
-                              Offset localPosition = box.globalToLocal(
-                                details.globalPosition,
-                              );
-                              final x = _convertToChartX(
-                                localPosition.dx,
-                                constraints.maxWidth,
-                              );
-                              final y = _convertToChartY(
-                                localPosition.dy,
-                                constraints.maxHeight,
-                              );
-                              _updatePointPosition(_draggedPointIndex!, x, y);
-                            }
-                          }
-                        : null,
-                    onPanEnd: !widget.readOnly
-                        ? (details) {
-                            _draggedPointIndex = null;
-                            setState(() {});
-                          }
-                        : null,
-                    child: LineChart(
-                      LineChartData(
-                        lineBarsData: [
-                          LineChartBarData(
-                            spots: _points
-                                .map((p) => FlSpot(p.tempC, p.speedPercent))
-                                .toList(),
-                            isCurved: false,
-                            barWidth: 4,
-                            color: Theme.of(context).colorScheme.primary,
-                            dotData: FlDotData(
+                const SizedBox(height: 16),
+                SizedBox(
+                  height: 300,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      return GestureDetector(
+                        onPanStart: !widget.readOnly
+                            ? (details) {
+                                RenderBox box =
+                                    context.findRenderObject() as RenderBox;
+                                Offset localPosition = box.globalToLocal(
+                                  details.globalPosition,
+                                );
+                                final x = _convertToChartX(
+                                  localPosition.dx,
+                                  constraints.maxWidth,
+                                );
+                                final y = _convertToChartY(
+                                  localPosition.dy,
+                                  constraints.maxHeight,
+                                );
+                                _draggedPointIndex = _findNearestPointIndex(
+                                  x,
+                                  y,
+                                );
+                                if (_draggedPointIndex != null) {
+                                  _selectedPointIndex = _draggedPointIndex;
+                                  setState(() {});
+                                }
+                              }
+                            : null,
+                        onPanUpdate: !widget.readOnly
+                            ? (details) {
+                                if (_draggedPointIndex != null) {
+                                  RenderBox box =
+                                      context.findRenderObject() as RenderBox;
+                                  Offset localPosition = box.globalToLocal(
+                                    details.globalPosition,
+                                  );
+                                  final x = _convertToChartX(
+                                    localPosition.dx,
+                                    constraints.maxWidth,
+                                  );
+                                  final y = _convertToChartY(
+                                    localPosition.dy,
+                                    constraints.maxHeight,
+                                  );
+                                  _updatePointPosition(
+                                    _draggedPointIndex!,
+                                    x,
+                                    y,
+                                  );
+                                }
+                              }
+                            : null,
+                        onPanEnd: !widget.readOnly
+                            ? (details) {
+                                _draggedPointIndex = null;
+                                setState(() {});
+                              }
+                            : null,
+                        child: LineChart(
+                          LineChartData(
+                            lineBarsData: [
+                              LineChartBarData(
+                                spots: _points
+                                    .map((p) => FlSpot(p.tempC, p.speedPercent))
+                                    .toList(),
+                                isCurved: false,
+                                barWidth: 4,
+                                color: Theme.of(context).colorScheme.primary,
+                                dotData: FlDotData(
+                                  show: true,
+                                  getDotPainter:
+                                      (spot, percent, barData, index) {
+                                        final colorScheme = Theme.of(
+                                          context,
+                                        ).colorScheme;
+                                        return FlDotCirclePainter(
+                                          radius: 8,
+                                          color: _draggedPointIndex == index
+                                              ? colorScheme.secondary
+                                              : _selectedPointIndex == index
+                                              ? colorScheme.tertiary
+                                              : colorScheme.primary,
+                                          strokeWidth:
+                                              _selectedPointIndex == index
+                                              ? 4
+                                              : 2,
+                                          strokeColor: colorScheme.surface,
+                                        );
+                                      },
+                                ),
+                              ),
+                            ],
+                            lineTouchData: LineTouchData(enabled: false),
+                            gridData: FlGridData(
                               show: true,
-                              getDotPainter: (spot, percent, barData, index) {
-                                return FlDotCirclePainter(
-                                  radius: 8,
-                                  color: _draggedPointIndex == index
-                                      ? Theme.of(context).colorScheme.secondary
-                                      : Theme.of(context).colorScheme.primary,
-                                  strokeWidth: 2,
-                                  strokeColor: Theme.of(
+                              drawVerticalLine: true,
+                              drawHorizontalLine: true,
+                              verticalInterval: 10,
+                              horizontalInterval: 10,
+                              getDrawingHorizontalLine: (value) {
+                                return FlLine(
+                                  color: Theme.of(
                                     context,
-                                  ).colorScheme.surface,
+                                  ).colorScheme.outline.withValues(alpha: 0.2),
+                                  strokeWidth: 1,
+                                );
+                              },
+                              getDrawingVerticalLine: (value) {
+                                return FlLine(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.outline.withValues(alpha: 0.2),
+                                  strokeWidth: 1,
                                 );
                               },
                             ),
-                          ),
-                        ],
-                        lineTouchData: LineTouchData(enabled: false),
-                        gridData: FlGridData(
-                          show: true,
-                          drawVerticalLine: true,
-                          drawHorizontalLine: true,
-                          verticalInterval: 10,
-                          horizontalInterval: 10,
-                          getDrawingHorizontalLine: (value) {
-                            return FlLine(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.outline.withValues(alpha: 0.2),
-                              strokeWidth: 1,
-                            );
-                          },
-                          getDrawingVerticalLine: (value) {
-                            return FlLine(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.outline.withValues(alpha: 0.2),
-                              strokeWidth: 1,
-                            );
-                          },
-                        ),
-                        titlesData: FlTitlesData(
-                          show: true,
-                          rightTitles: AxisTitles(
-                            sideTitles: SideTitles(showTitles: false),
-                          ),
-                          topTitles: AxisTitles(
-                            sideTitles: SideTitles(showTitles: false),
-                          ),
-                          bottomTitles: AxisTitles(
-                            sideTitles: SideTitles(
-                              showTitles: true,
-                              reservedSize: 30,
-                              interval: 10,
-                              getTitlesWidget: (value, meta) {
-                                if (value >= 20 &&
-                                    value <= 100 &&
-                                    value % 10 == 0) {
-                                  return Text(
-                                    '${value.toInt()}°C',
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.bodySmall,
-                                  );
-                                }
-                                return const SizedBox.shrink();
-                              },
+                            titlesData: FlTitlesData(
+                              show: true,
+                              rightTitles: AxisTitles(
+                                sideTitles: SideTitles(showTitles: false),
+                              ),
+                              topTitles: AxisTitles(
+                                sideTitles: SideTitles(showTitles: false),
+                              ),
+                              bottomTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 30,
+                                  interval: 10,
+                                  getTitlesWidget: (value, meta) {
+                                    if (value >= 20 &&
+                                        value <= 100 &&
+                                        value % 10 == 0) {
+                                      return Text(
+                                        '${value.toInt()}°C',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                      );
+                                    }
+                                    return const SizedBox.shrink();
+                                  },
+                                ),
+                              ),
+                              leftTitles: AxisTitles(
+                                sideTitles: SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 40,
+                                  interval: 10,
+                                  getTitlesWidget: (value, meta) {
+                                    if (value >= 0 &&
+                                        value <= 100 &&
+                                        value % 10 == 0) {
+                                      return Text(
+                                        '${value.toInt()}%',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                      );
+                                    }
+                                    return const SizedBox.shrink();
+                                  },
+                                ),
+                              ),
+                            ),
+                            borderData: FlBorderData(
+                              show: true,
+                              border: Border.all(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.outline.withValues(alpha: 0.3),
+                              ),
+                            ),
+                            minX: 20,
+                            maxX: 100,
+                            minY: 0,
+                            maxY: 100,
+                            extraLinesData: ExtraLinesData(
+                              horizontalLines: [
+                                if (widget.currentSpeed != null)
+                                  HorizontalLine(
+                                    y: widget.currentSpeed!,
+                                    color: Colors.orange,
+                                    strokeWidth: 2,
+                                    dashArray: [5, 5],
+                                  ),
+                              ],
+                              verticalLines: [
+                                if (widget.currentTemp != null)
+                                  VerticalLine(
+                                    x: widget.currentTemp!,
+                                    color: Colors.orange,
+                                    strokeWidth: 2,
+                                    dashArray: [5, 5],
+                                  ),
+                              ],
                             ),
                           ),
-                          leftTitles: AxisTitles(
-                            sideTitles: SideTitles(
-                              showTitles: true,
-                              reservedSize: 40,
-                              interval: 10,
-                              getTitlesWidget: (value, meta) {
-                                if (value >= 0 &&
-                                    value <= 100 &&
-                                    value % 10 == 0) {
-                                  return Text(
-                                    '${value.toInt()}%',
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.bodySmall,
-                                  );
-                                }
-                                return const SizedBox.shrink();
-                              },
-                            ),
-                          ),
                         ),
-                        borderData: FlBorderData(
-                          show: true,
-                          border: Border.all(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.outline.withValues(alpha: 0.3),
-                          ),
-                        ),
-                        minX: 20,
-                        maxX: 100,
-                        minY: 0,
-                        maxY: 100,
-                        extraLinesData: ExtraLinesData(
-                          horizontalLines: [
-                            if (widget.currentSpeed != null)
-                              HorizontalLine(
-                                y: widget.currentSpeed!,
-                                color: Colors.orange,
-                                strokeWidth: 2,
-                                dashArray: [5, 5],
-                              ),
-                          ],
-                          verticalLines: [
-                            if (widget.currentTemp != null)
-                              VerticalLine(
-                                x: widget.currentTemp!,
-                                color: Colors.orange,
-                                strokeWidth: 2,
-                                dashArray: [5, 5],
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (_selectedPointIndex != null) ...[
+                  Text(
+                    _selectedPointLabel(),
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                Text(
+                  'Temperature (°C) → Fan Speed (%)',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            Text(
-              'Temperature (°C) → Fan Speed (%)',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
+          ),
         ),
       ),
+    );
+  }
+
+  String _selectedPointLabel() {
+    final index = _selectedPointIndex;
+    if (index == null || index < 0 || index >= _points.length) {
+      return 'No point selected';
+    }
+    final point = _points[index];
+    return 'Point ${index + 1}: ${point.tempC.round()}°C / ${point.speedPercent.round()}%';
+  }
+
+  void _handleUiInputCommand(UiInputCommand command) {
+    if (widget.readOnly || _points.isEmpty) {
+      return;
+    }
+
+    final current = _selectedPointIndex ?? 0;
+    switch (command) {
+      case UiInputCommand.curvePreviousPoint:
+        setState(() {
+          _selectedPointIndex = (current - 1).clamp(0, _points.length - 1);
+        });
+      case UiInputCommand.curveNextPoint:
+        setState(() {
+          _selectedPointIndex = (current + 1).clamp(0, _points.length - 1);
+        });
+      case UiInputCommand.curveSpeedUp:
+        _nudgeSelectedPoint(deltaSpeed: 1);
+      case UiInputCommand.curveSpeedDown:
+        _nudgeSelectedPoint(deltaSpeed: -1);
+      case UiInputCommand.curveTempLeft:
+        _nudgeSelectedPoint(deltaTemp: -1);
+      case UiInputCommand.curveTempRight:
+        _nudgeSelectedPoint(deltaTemp: 1);
+      case UiInputCommand.focusUp:
+      case UiInputCommand.focusDown:
+      case UiInputCommand.focusLeft:
+      case UiInputCommand.focusRight:
+      case UiInputCommand.activate:
+      case UiInputCommand.back:
+      case UiInputCommand.apply:
+      case UiInputCommand.nextTab:
+      case UiInputCommand.previousTab:
+        return;
+    }
+  }
+
+  void _nudgeSelectedPoint({double deltaTemp = 0, double deltaSpeed = 0}) {
+    final index = _selectedPointIndex ?? 0;
+    _selectedPointIndex = index;
+    final point = _points[index];
+    _updatePointPosition(
+      index,
+      point.tempC + deltaTemp,
+      point.speedPercent + deltaSpeed,
     );
   }
 
@@ -379,5 +481,41 @@ class _FanCurveEditorState extends State<FanCurveEditor> {
 
       // Note: Changes are only applied when Apply button is clicked
     });
+  }
+}
+
+class _FanCurveInputAction extends Action<UiInputIntent> {
+  final ValueChanged<UiInputCommand> onCommand;
+  final BuildContext parentContext;
+
+  _FanCurveInputAction(this.onCommand, this.parentContext);
+
+  bool _isCurveCommand(UiInputCommand command) {
+    return switch (command) {
+      UiInputCommand.curvePreviousPoint ||
+      UiInputCommand.curveNextPoint ||
+      UiInputCommand.curveSpeedUp ||
+      UiInputCommand.curveSpeedDown ||
+      UiInputCommand.curveTempLeft ||
+      UiInputCommand.curveTempRight => true,
+      UiInputCommand.focusUp ||
+      UiInputCommand.focusDown ||
+      UiInputCommand.focusLeft ||
+      UiInputCommand.focusRight ||
+      UiInputCommand.activate ||
+      UiInputCommand.back ||
+      UiInputCommand.apply ||
+      UiInputCommand.nextTab ||
+      UiInputCommand.previousTab => false,
+    };
+  }
+
+  @override
+  Object? invoke(UiInputIntent intent) {
+    if (!_isCurveCommand(intent.command)) {
+      return Actions.maybeInvoke(parentContext, intent);
+    }
+    onCommand(intent.command);
+    return null;
   }
 }

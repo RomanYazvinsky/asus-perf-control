@@ -8,10 +8,13 @@ import 'screens/tdp_screen.dart';
 import 'screens/xg_mobile_fan_diagnostic_screen.dart';
 import 'bridge_generated.dart/frb_generated.dart';
 import 'services/bridge_service.dart';
+import 'services/input/steam_input_service.dart';
 import 'widgets/copyable_alert.dart';
 import 'widgets/input_diagnostics.dart';
+import 'widgets/input/gamepad_input_scope.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+final SteamInputService steamInputService = FfiSteamInputService();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -51,9 +54,12 @@ class AsusLinuxControlApp extends StatelessWidget {
           });
           return const SizedBox.shrink();
         };
-        return InputDiagnostics(
-          enabled: const bool.fromEnvironment('ASUS_INPUT_DIAGNOSTICS'),
-          child: child ?? const SizedBox.shrink(),
+        return GamepadInputScope(
+          service: steamInputService,
+          child: InputDiagnostics(
+            enabled: const bool.fromEnvironment('ASUS_INPUT_DIAGNOSTICS'),
+            child: child ?? const SizedBox.shrink(),
+          ),
         );
       },
       home: const AppShell(),
