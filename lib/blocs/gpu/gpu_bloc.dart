@@ -1,13 +1,18 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../models/gpu_models.dart';
 import '../../services/gpu_service.dart';
+import '../../services/backend_logger.dart';
+import '../../services/settings/app_settings_store.dart';
 import 'gpu_event.dart';
 import 'gpu_state.dart';
 
 class GpuBloc extends Bloc<GpuEvent, GpuState> {
   final IGpuService _gpuService;
+  final AppSettingsStore? _settingsStore;
 
-  GpuBloc({required IGpuService gpuService})
+  GpuBloc({required IGpuService gpuService, AppSettingsStore? settingsStore})
     : _gpuService = gpuService,
+      _settingsStore = settingsStore,
       super(GpuInitial()) {
     on<LoadCapabilitiesEvent>(_onLoadCapabilities);
     on<LoadStatusEvent>(_onLoadStatus);
@@ -35,6 +40,7 @@ class GpuBloc extends Bloc<GpuEvent, GpuState> {
 
       final status = await _gpuService.getStatus();
       final supportedModes = await _gpuService.getSupportedModes();
+      await _logSavedModeMismatch(status);
 
       emit(
         GpuLoaded(
@@ -96,6 +102,11 @@ class GpuBloc extends Bloc<GpuEvent, GpuState> {
 
     try {
       await _gpuService.setGpuMode(event.mode);
+      await _settingsStore?.update((settings) {
+        return settings.copyWith(
+          hardware: settings.hardware.copyWith(gpuMode: event.mode.name),
+        );
+      });
 
       // Reload status after mode change
       final status = await _gpuService.getStatus();
@@ -143,6 +154,28 @@ class GpuBloc extends Bloc<GpuEvent, GpuState> {
         emit(GpuError(message: 'Failed to set GPU mode: $e'));
       }
     }
+  }
+
+  Future<void> _logSavedModeMismatch(GpuStatus status) async {
+    final settings = await _settingsStore?.load();
+    final desiredName = settings?.hardware.gpuMode;
+    if (desiredName == null) {
+      await _settingsStore?.update((settings) {
+        return settings.copyWith(
+          hardware: settings.hardware.copyWith(gpuMode: status.activeMode.name),
+        );
+      });
+      return;
+    }
+    if (desiredName == status.activeMode.name) return;
+    BackendLogger.logEvent(
+      'Settings.hardwareMismatch',
+      fields: {
+        'key': 'gpuMode',
+        'expected': desiredName,
+        'actual': status.activeMode.name,
+      },
+    );
   }
 
   Future<void> _onConfirmReboot(

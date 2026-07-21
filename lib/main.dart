@@ -8,7 +8,9 @@ import 'screens/tdp_screen.dart';
 import 'screens/xg_mobile_fan_diagnostic_screen.dart';
 import 'bridge_generated.dart/frb_generated.dart';
 import 'services/bridge_service.dart';
+import 'services/backend_logger.dart';
 import 'services/input/steam_input_service.dart';
+import 'services/settings/app_settings_store.dart';
 import 'widgets/copyable_alert.dart';
 import 'widgets/input_diagnostics.dart';
 import 'widgets/input/gamepad_input_scope.dart';
@@ -23,7 +25,9 @@ Future<void> main() async {
 }
 
 class AsusLinuxControlApp extends StatelessWidget {
-  const AsusLinuxControlApp({super.key});
+  final AppSettingsStore? settingsStore;
+
+  const AsusLinuxControlApp({super.key, this.settingsStore});
 
   @override
   Widget build(BuildContext context) {
@@ -62,13 +66,15 @@ class AsusLinuxControlApp extends StatelessWidget {
           ),
         );
       },
-      home: const AppShell(),
+      home: AppShell(settingsStore: settingsStore ?? FileAppSettingsStore()),
     );
   }
 }
 
 class AppShell extends StatefulWidget {
-  const AppShell({super.key});
+  final AppSettingsStore? settingsStore;
+
+  const AppShell({super.key, this.settingsStore});
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -76,6 +82,8 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   int _selectedIndex = 0;
+  late final AppSettingsStore _settingsStore;
+  late final List<Widget> _screens;
 
   static const List<NavigationRailDestination> _destinations = [
     NavigationRailDestination(
@@ -115,20 +123,21 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     ),
   ];
 
-  static final List<Widget> _screens = [
-    HomeScreen(),
-    TdpScreen(),
-    GpuScreen(),
-    FanScreen(),
-    BatteryScreen(),
-    XgMobileFanDiagnosticScreen(),
-    PackageUpdatesScreen(),
-  ];
-
   @override
   void initState() {
     super.initState();
+    _settingsStore = widget.settingsStore ?? FileAppSettingsStore();
+    _screens = [
+      HomeScreen(settingsStore: _settingsStore),
+      TdpScreen(settingsStore: _settingsStore),
+      GpuScreen(settingsStore: _settingsStore),
+      FanScreen(settingsStore: _settingsStore),
+      BatteryScreen(settingsStore: _settingsStore),
+      XgMobileFanDiagnosticScreen(),
+      const PackageUpdatesScreen(),
+    ];
     WidgetsBinding.instance.addObserver(this);
+    _loadSavedSettings();
   }
 
   @override
@@ -152,8 +161,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         children: [
           NavigationRail(
             selectedIndex: _selectedIndex,
-            onDestinationSelected: (index) =>
-                setState(() => _selectedIndex = index),
+            onDestinationSelected: _selectDestination,
             labelType: NavigationRailLabelType.all,
             destinations: _destinations,
           ),
@@ -164,5 +172,32 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         ],
       ),
     );
+  }
+
+  Future<void> _loadSavedSettings() async {
+    final settings = await _settingsStore.load();
+    final savedIndex = settings.ui.selectedNavigationIndex;
+    if (savedIndex < 0 || savedIndex >= _destinations.length) {
+      BackendLogger.logEvent(
+        'Settings.readMismatch',
+        fields: {
+          'key': 'ui.selectedNavigationIndex',
+          'actual': savedIndex,
+          'expected': '0..${_destinations.length - 1}',
+        },
+      );
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _selectedIndex = savedIndex);
+  }
+
+  void _selectDestination(int index) {
+    setState(() => _selectedIndex = index);
+    _settingsStore.update((settings) {
+      return settings.copyWith(
+        ui: settings.ui.copyWith(selectedNavigationIndex: index),
+      );
+    });
   }
 }

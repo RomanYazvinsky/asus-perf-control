@@ -4,14 +4,16 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../blocs/tdp/tdp_bloc.dart';
 import '../blocs/tdp/tdp_event.dart';
 import '../blocs/tdp/tdp_state.dart';
+import '../services/settings/app_settings_store.dart';
 import '../widgets/copyable_alert.dart';
 import '../widgets/tdp/tdp_controls.dart';
 import '../widgets/tdp/tdp_unsupported_card.dart';
 
 class TdpScreen extends StatefulWidget {
   final TdpBloc? testBloc;
+  final AppSettingsStore? settingsStore;
 
-  const TdpScreen({super.key, this.testBloc});
+  const TdpScreen({super.key, this.testBloc, this.settingsStore});
 
   @override
   State<TdpScreen> createState() => _TdpScreenState();
@@ -33,7 +35,9 @@ class _TdpScreenState extends State<TdpScreen> {
   @override
   void initState() {
     super.initState();
-    _tdpBloc = widget.testBloc ?? (TdpBloc()..add(LoadTdpConfig()));
+    _tdpBloc =
+        widget.testBloc ??
+        (TdpBloc(settingsStore: widget.settingsStore)..add(LoadTdpConfig()));
   }
 
   @override

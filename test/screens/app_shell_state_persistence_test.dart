@@ -5,6 +5,9 @@ import 'package:flutter_application_1/screens/home_screen.dart';
 import 'package:flutter_application_1/screens/tdp_screen.dart';
 import 'package:flutter_application_1/screens/gpu_screen.dart';
 import 'package:flutter_application_1/screens/xg_mobile_fan_diagnostic_screen.dart';
+import 'package:flutter_application_1/services/settings/app_settings.dart';
+
+import '../test_helpers.dart';
 
 void main() {
   group('AppShell state persistence', () {
@@ -60,6 +63,39 @@ void main() {
         find.byType(XgMobileFanDiagnosticScreen, skipOffstage: false),
         findsOneWidget,
       );
+    });
+
+    testWidgets('loads selected navigation index from settings on startup', (
+      tester,
+    ) async {
+      final store = MemoryAppSettingsStore(
+        const AppSettings(ui: UiSettings(selectedNavigationIndex: 2)),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(home: AppShell(settingsStore: store)),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+
+      final rail = tester.widget<NavigationRail>(find.byType(NavigationRail));
+      expect(rail.selectedIndex, 2);
+    });
+
+    testWidgets('saves selected navigation index when destination changes', (
+      tester,
+    ) async {
+      final store = MemoryAppSettingsStore(AppSettings.defaults);
+
+      await tester.pumpWidget(
+        MaterialApp(home: AppShell(settingsStore: store)),
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+
+      final rail = tester.widget<NavigationRail>(find.byType(NavigationRail));
+      rail.onDestinationSelected?.call(4);
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(store.savedSettings.last.ui.selectedNavigationIndex, 4);
     });
   });
 }

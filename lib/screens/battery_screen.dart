@@ -7,12 +7,14 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../blocs/battery/battery_bloc.dart';
 import '../blocs/battery/battery_event.dart';
 import '../blocs/battery/battery_state.dart';
+import '../services/settings/app_settings_store.dart';
 import '../widgets/copyable_alert.dart';
 
 class BatteryScreen extends StatefulWidget {
   final BatteryBloc? testBloc;
+  final AppSettingsStore? settingsStore;
 
-  const BatteryScreen({super.key, this.testBloc});
+  const BatteryScreen({super.key, this.testBloc, this.settingsStore});
 
   @override
   State<BatteryScreen> createState() => _BatteryScreenState();
@@ -29,7 +31,8 @@ class _BatteryScreenState extends State<BatteryScreen> {
     super.initState();
     _batteryBloc =
         widget.testBloc ??
-        (BatteryBloc()..add(const CheckBatterySupportEvent()));
+        (BatteryBloc(settingsStore: widget.settingsStore)
+          ..add(const CheckBatterySupportEvent()));
   }
 
   @override

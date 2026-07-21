@@ -4,15 +4,27 @@ import 'package:mocktail/mocktail.dart';
 import 'package:flutter_application_1/blocs/performance/performance_bloc.dart';
 import 'package:flutter_application_1/blocs/performance/performance_event.dart';
 import 'package:flutter_application_1/blocs/performance/performance_state.dart';
+import 'package:flutter_application_1/services/backend_logger.dart';
+import 'package:flutter_application_1/services/settings/app_settings.dart';
 
 import '../mocks.dart';
+import '../test_helpers.dart';
 
 void main() {
   group('PerformanceBloc', () {
     late MockPerformanceService mockService;
+    late List<String> logs;
+    late MemoryAppSettingsStore performanceStore;
 
     setUp(() {
       mockService = MockPerformanceService();
+      logs = <String>[];
+      performanceStore = MemoryAppSettingsStore(AppSettings.defaults);
+      BackendLogger.sink = logs.add;
+    });
+
+    tearDown(() {
+      BackendLogger.resetForTests();
     });
 
     test('initial state is PerformanceInitial', () {
@@ -38,6 +50,31 @@ void main() {
               .having((s) => s.currentMode, 'currentMode', 1)
               .having((s) => s.modeName, 'modeName', 'Balanced'),
         ],
+      );
+
+      blocTest<PerformanceBloc, PerformanceState>(
+        'seeds settings with current mode when no performance mode is saved',
+        build: () {
+          when(
+            () => mockService.getPerformanceMode(),
+          ).thenAnswer((_) async => 1);
+          return PerformanceBloc(
+            service: mockService,
+            settingsStore: performanceStore,
+          );
+        },
+        act: (bloc) => bloc.add(LoadCurrentModeEvent()),
+        expect: () => [
+          isA<PerformanceLoading>(),
+          isA<PerformanceLoaded>().having((s) => s.currentMode, 'mode', 1),
+        ],
+        verify: (_) {
+          expect(
+            performanceStore.savedSettings.last.hardware.performanceMode,
+            1,
+          );
+          verifyNever(() => mockService.setPerformanceMode(any()));
+        },
       );
 
       blocTest<PerformanceBloc, PerformanceState>(
@@ -122,7 +159,60 @@ void main() {
         act: (bloc) => bloc.add(SetModeRequestedEvent(0)),
         expect: () => [isA<PerformanceLoading>(), isA<PerformanceError>()],
       );
+
+      blocTest<PerformanceBloc, PerformanceState>(
+        'saves requested performance mode to settings',
+        setUp: () {
+          when(
+            () => mockService.setPerformanceMode(any()),
+          ).thenAnswer((_) async {});
+        },
+        build: () {
+          return PerformanceBloc(
+            service: mockService,
+            settingsStore: performanceStore,
+          );
+        },
+        act: (bloc) => bloc.add(SetModeRequestedEvent(2)),
+        expect: () => [
+          isA<PerformanceLoading>(),
+          isA<PerformanceLoaded>().having((s) => s.currentMode, 'mode', 2),
+        ],
+        verify: (_) {
+          verify(() => mockService.setPerformanceMode(2)).called(1);
+          expect(
+            performanceStore.savedSettings.last.hardware.performanceMode,
+            2,
+          );
+        },
+      );
     });
+
+    blocTest<PerformanceBloc, PerformanceState>(
+      'logs mismatch and restores saved performance mode on load',
+      build: () {
+        when(() => mockService.getPerformanceMode()).thenAnswer((_) async => 0);
+        when(
+          () => mockService.setPerformanceMode(any()),
+        ).thenAnswer((_) async {});
+        return PerformanceBloc(
+          service: mockService,
+          settingsStore: MemoryAppSettingsStore(
+            const AppSettings(hardware: HardwareSettings(performanceMode: 2)),
+          ),
+        );
+      },
+      act: (bloc) => bloc.add(LoadCurrentModeEvent()),
+      expect: () => [
+        isA<PerformanceLoading>(),
+        isA<PerformanceLoaded>().having((s) => s.currentMode, 'mode', 2),
+      ],
+      verify: (_) {
+        verify(() => mockService.setPerformanceMode(2)).called(1);
+        expect(logs.join('\n'), contains('Settings.hardwareMismatch'));
+        expect(logs.join('\n'), contains('performanceMode'));
+      },
+    );
 
     group('State transitions', () {
       blocTest<PerformanceBloc, PerformanceState>(

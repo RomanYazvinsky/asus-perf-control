@@ -2,6 +2,9 @@
 
 import 'dart:async';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import '../../services/backend_logger.dart';
+import '../../services/settings/app_settings.dart';
+import '../../services/settings/app_settings_store.dart';
 import '../../services/fan_service.dart';
 import '../../services/asusd_fan_client.dart';
 import 'fan_event.dart';
@@ -9,9 +12,12 @@ import 'fan_state.dart';
 
 class FanBloc extends Bloc<FanEvent, FanState> {
   final IFanService _fanService;
+  final AppSettingsStore? _settingsStore;
   Timer? _rpmRefreshTimer;
 
-  FanBloc(this._fanService) : super(FanInitial()) {
+  FanBloc(this._fanService, {AppSettingsStore? settingsStore})
+    : _settingsStore = settingsStore,
+      super(FanInitial()) {
     on<LoadFanCapabilities>(_onLoadFanCapabilities);
     on<RefreshFanStatus>(_onRefreshFanStatus);
     on<SelectFan>(_onSelectFan);
@@ -40,7 +46,9 @@ class FanBloc extends Bloc<FanEvent, FanState> {
       final rpms = await _fanService.getFanRpms();
       final rpmMap = {for (var r in rpms) _fanIdFromString(r.id): r.rpm ?? 0};
       final temperatures = await _readTemperatures();
-      final dynamicEngineRunning = await _readDynamicEngineRunning();
+      var dynamicEngineRunning = await _readDynamicEngineRunning();
+      final settings = await _settingsStore?.load();
+      final savedFanSettings = settings?.hardware.fan;
 
       final asusdCurves = <FanId, Map<PerfProfile, FanCurveData>>{};
       for (var fan in capabilities.fans) {
@@ -61,26 +69,61 @@ class FanBloc extends Bloc<FanEvent, FanState> {
         }
       }
 
-      final selectedFan = _fanIdFromString(capabilities.fans.first.id);
-
-      emit(
-        FanLoaded(
-          capabilities: capabilities,
-          fanRpms: rpmMap,
-          cpuTempC: temperatures.cpuTempC,
-          gpuTempC: temperatures.gpuTempC,
-          asusdCurves: asusdCurves,
-          selectedFan: selectedFan,
-          selectedProfile: PerfProfile.balanced,
-          controlModes: {
-            for (var f in capabilities.fans)
-              _fanIdFromString(f.id): dynamicEngineRunning
-                  ? FanControlMode.dynamicEngine
-                  : FanControlMode.asusctlCurve,
-          },
-          dynamicEngineRunning: dynamicEngineRunning,
-        ),
+      final availableFanIds = capabilities.fans
+          .map((fan) => _fanIdFromString(fan.id))
+          .toSet();
+      final selectedFan =
+          _fanIdFromName(savedFanSettings?.selectedFan, availableFanIds) ??
+          _fanIdFromString(capabilities.fans.first.id);
+      final selectedProfile =
+          _profileFromName(savedFanSettings?.selectedProfile) ??
+          PerfProfile.balanced;
+      final savedControlModes = _controlModesFromSettings(
+        savedFanSettings,
+        availableFanIds,
       );
+      final savedDynamicConfig = _dynamicConfigFromSettings(savedFanSettings);
+      if (!dynamicEngineRunning &&
+          savedControlModes.values.contains(FanControlMode.dynamicEngine) &&
+          savedDynamicConfig != null) {
+        _logHardwareMismatch(
+          'fan.dynamicEngine',
+          expected: 'running',
+          actual: 'stopped',
+        );
+        await _fanService.startDynamicEngine(savedDynamicConfig);
+        dynamicEngineRunning = true;
+      }
+      if (selectedProfile != PerfProfile.balanced) {
+        await _fanService.setActiveProfile(selectedProfile);
+      }
+
+      final loadedState = FanLoaded(
+        capabilities: capabilities,
+        fanRpms: rpmMap,
+        cpuTempC: temperatures.cpuTempC,
+        gpuTempC: temperatures.gpuTempC,
+        asusdCurves: asusdCurves,
+        selectedFan: selectedFan,
+        selectedProfile: selectedProfile,
+        controlModes: savedControlModes.isNotEmpty
+            ? savedControlModes
+            : {
+                for (var f in capabilities.fans)
+                  _fanIdFromString(f.id): dynamicEngineRunning
+                      ? FanControlMode.dynamicEngine
+                      : FanControlMode.asusctlCurve,
+              },
+        dynamicEngineRunning: dynamicEngineRunning,
+        engineConfig: savedDynamicConfig,
+      );
+      if (savedFanSettings == null) {
+        await _saveFanSettings(
+          loadedState,
+          dynamicEngineConfig: loadedState.engineConfig,
+        );
+      }
+      emit(loadedState);
 
       _startRpmRefresh();
     } catch (e) {
@@ -128,6 +171,10 @@ class FanBloc extends Bloc<FanEvent, FanState> {
     if (state is! FanLoaded) return;
 
     final currentState = state as FanLoaded;
+    await _saveFanSettings(
+      currentState.copyWith(selectedFan: event.fanId),
+      dynamicEngineConfig: currentState.engineConfig,
+    );
     emit(currentState.copyWith(selectedFan: event.fanId));
   }
 
@@ -140,7 +187,12 @@ class FanBloc extends Bloc<FanEvent, FanState> {
     final currentState = state as FanLoaded;
     try {
       await _fanService.setActiveProfile(event.profile);
-      emit(currentState.copyWith(selectedProfile: event.profile));
+      final nextState = currentState.copyWith(selectedProfile: event.profile);
+      await _saveFanSettings(
+        nextState,
+        dynamicEngineConfig: currentState.engineConfig,
+      );
+      emit(nextState);
     } catch (e) {
       emit(FanError('Failed to switch performance profile: $e'));
     }
@@ -161,17 +213,20 @@ class FanBloc extends Bloc<FanEvent, FanState> {
       );
       newControlModes[event.fanId] = FanControlMode.asusctlCurve;
 
-      emit(
-        currentState.copyWith(
-          controlModes: newControlModes,
-          asusdCurves: _asusdCurvesWithCurve(
-            currentState,
-            event.profile,
-            event.fanId,
-            event.curve,
-          ),
+      final nextState = currentState.copyWith(
+        controlModes: newControlModes,
+        asusdCurves: _asusdCurvesWithCurve(
+          currentState,
+          event.profile,
+          event.fanId,
+          event.curve,
         ),
       );
+      await _saveFanSettings(
+        nextState,
+        dynamicEngineConfig: nextState.engineConfig,
+      );
+      emit(nextState);
     } catch (e) {
       emit(FanError('Failed to set asusd curve: $e'));
     }
@@ -196,23 +251,26 @@ class FanBloc extends Bloc<FanEvent, FanState> {
       );
       newControlModes[event.fanId] = FanControlMode.constantSpeed;
 
-      emit(
-        currentState.copyWith(
-          controlModes: newControlModes,
-          asusdCurves: _asusdCurvesWithCurve(
-            currentState,
-            event.profile,
-            event.fanId,
-            List.generate(
-              8,
-              (index) => FanCurvePoint(
-                tempC: 30.0 + index * 10.0,
-                speedPercent: event.speedPercent.toDouble(),
-              ),
+      final nextState = currentState.copyWith(
+        controlModes: newControlModes,
+        asusdCurves: _asusdCurvesWithCurve(
+          currentState,
+          event.profile,
+          event.fanId,
+          List.generate(
+            8,
+            (index) => FanCurvePoint(
+              tempC: 30.0 + index * 10.0,
+              speedPercent: event.speedPercent.toDouble(),
             ),
           ),
         ),
       );
+      await _saveFanSettings(
+        nextState,
+        dynamicEngineConfig: nextState.engineConfig,
+      );
+      emit(nextState);
     } catch (e) {
       emit(FanError('Failed to set constant speed: $e'));
     }
@@ -237,13 +295,13 @@ class FanBloc extends Bloc<FanEvent, FanState> {
         newControlModes[fanId] = FanControlMode.dynamicEngine;
       }
 
-      emit(
-        currentState.copyWith(
-          controlModes: newControlModes,
-          dynamicEngineRunning: true,
-          engineConfig: event.config,
-        ),
+      final nextState = currentState.copyWith(
+        controlModes: newControlModes,
+        dynamicEngineRunning: true,
+        engineConfig: event.config,
       );
+      await _saveFanSettings(nextState, dynamicEngineConfig: event.config);
+      emit(nextState);
     } catch (e) {
       emit(FanError('Failed to start dynamic engine: $e'));
     }
@@ -268,13 +326,13 @@ class FanBloc extends Bloc<FanEvent, FanState> {
         newControlModes[fanId] = FanControlMode.asusctlCurve;
       }
 
-      emit(
-        currentState.copyWith(
-          controlModes: newControlModes,
-          dynamicEngineRunning: false,
-          clearEngineConfig: true,
-        ),
+      final nextState = currentState.copyWith(
+        controlModes: newControlModes,
+        dynamicEngineRunning: false,
+        clearEngineConfig: true,
       );
+      await _saveFanSettings(nextState, dynamicEngineConfig: null);
+      emit(nextState);
     } catch (e) {
       emit(FanError('Failed to stop dynamic engine: $e'));
     }
@@ -292,15 +350,14 @@ class FanBloc extends Bloc<FanEvent, FanState> {
       final currentConfig =
           currentState.engineConfig ?? _engineConfigFromState(currentState);
 
-      emit(
-        currentState.copyWith(
-          engineConfig: _engineConfigWithCurve(
-            currentConfig,
-            event.fanId,
-            event.curve,
-          ),
-        ),
+      final nextConfig = _engineConfigWithCurve(
+        currentConfig,
+        event.fanId,
+        event.curve,
       );
+      final nextState = currentState.copyWith(engineConfig: nextConfig);
+      await _saveFanSettings(nextState, dynamicEngineConfig: nextConfig);
+      emit(nextState);
     } catch (e) {
       emit(FanError('Failed to update dynamic curve: $e'));
     }
@@ -416,12 +473,15 @@ class FanBloc extends Bloc<FanEvent, FanState> {
         newControlModes[fanId] = FanControlMode.asusctlCurve;
       }
 
-      emit(
-        currentState.copyWith(
-          controlModes: newControlModes,
-          asusdCurves: newAsusdCurves,
-        ),
+      final nextState = currentState.copyWith(
+        controlModes: newControlModes,
+        asusdCurves: newAsusdCurves,
       );
+      await _saveFanSettings(
+        nextState,
+        dynamicEngineConfig: nextState.engineConfig,
+      );
+      emit(nextState);
     } catch (e) {
       emit(FanError('Failed to reset to defaults: $e'));
     }
@@ -487,6 +547,99 @@ class FanBloc extends Bloc<FanEvent, FanState> {
 
   FanId _fanIdFromString(String id) {
     return id == 'cpu' ? FanId.cpu : FanId.gpu;
+  }
+
+  FanId? _fanIdFromName(String? name, Set<FanId> availableFanIds) {
+    if (name == null) return null;
+    for (final fanId in availableFanIds) {
+      if (fanId.name == name) return fanId;
+    }
+    _logReadMismatch('hardware.fan.selectedFan', actual: name);
+    return null;
+  }
+
+  PerfProfile? _profileFromName(String? name) {
+    if (name == null) return null;
+    for (final profile in PerfProfile.values) {
+      if (profile.name == name) return profile;
+    }
+    _logReadMismatch('hardware.fan.selectedProfile', actual: name);
+    return null;
+  }
+
+  Map<FanId, FanControlMode> _controlModesFromSettings(
+    FanDesiredSettings? settings,
+    Set<FanId> availableFanIds,
+  ) {
+    if (settings == null || settings.controlModes.isEmpty) return const {};
+
+    final modes = <FanId, FanControlMode>{};
+    for (final entry in settings.controlModes.entries) {
+      final fanId = _fanIdFromName(entry.key, availableFanIds);
+      final mode = _controlModeFromName(entry.value);
+      if (fanId != null && mode != null) {
+        modes[fanId] = mode;
+      }
+    }
+    return modes;
+  }
+
+  FanControlMode? _controlModeFromName(String name) {
+    for (final mode in FanControlMode.values) {
+      if (mode.name == name) return mode;
+    }
+    _logReadMismatch('hardware.fan.controlModes', actual: name);
+    return null;
+  }
+
+  FanEngineConfig? _dynamicConfigFromSettings(FanDesiredSettings? settings) {
+    final json = settings?.dynamicEngineConfig;
+    if (json == null) return null;
+    try {
+      return FanEngineConfig.fromJson(json);
+    } catch (e) {
+      _logReadMismatch('hardware.fan.dynamicEngineConfig', actual: e);
+      return null;
+    }
+  }
+
+  Future<void> _saveFanSettings(
+    FanLoaded state, {
+    required FanEngineConfig? dynamicEngineConfig,
+  }) async {
+    await _settingsStore?.update((settings) {
+      return settings.copyWith(
+        hardware: settings.hardware.copyWith(
+          fan: FanDesiredSettings(
+            selectedProfile: state.selectedProfile.name,
+            selectedFan: state.selectedFan.name,
+            controlModes: {
+              for (final entry in state.controlModes.entries)
+                entry.key.name: entry.value.name,
+            },
+            dynamicEngineConfig: dynamicEngineConfig?.toJson(),
+          ),
+        ),
+      );
+    });
+  }
+
+  void _logReadMismatch(String key, {required Object actual}) {
+    BackendLogger.logEvent(
+      'Settings.readMismatch',
+      fields: {'key': key, 'actual': actual},
+    );
+  }
+
+  void _logHardwareMismatch(
+    String key, {
+    required Object expected,
+    required Object actual,
+  }) {
+    BackendLogger.logEvent(
+      'Settings.hardwareMismatch',
+      fields: {'key': key, 'expected': expected, 'actual': actual},
+    );
   }
 
   Future<FanTemperatures> _readTemperatures() async {

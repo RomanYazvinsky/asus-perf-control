@@ -5,12 +5,17 @@ import 'package:mocktail/mocktail.dart';
 import 'package:flutter_application_1/blocs/tdp/tdp_bloc.dart';
 import 'package:flutter_application_1/blocs/tdp/tdp_event.dart';
 import 'package:flutter_application_1/blocs/tdp/tdp_state.dart';
+import 'package:flutter_application_1/services/backend_logger.dart';
+import 'package:flutter_application_1/services/settings/app_settings.dart';
 
 import '../../mocks.dart';
+import '../../test_helpers.dart';
 
 void main() {
   group('TdpBloc independent limit writes', () {
     late MockTdpService service;
+    late MemoryAppSettingsStore settingsStore;
+    late List<String> logs;
 
     test('fakeTdpConfig carries explicit power limit enabled flag', () {
       final config = fakeTdpConfig(
@@ -26,6 +31,9 @@ void main() {
 
     setUp(() {
       service = MockTdpService();
+      settingsStore = MemoryAppSettingsStore(AppSettings.defaults);
+      logs = <String>[];
+      BackendLogger.sink = logs.add;
       when(() => service.getTdpConfig()).thenAnswer(
         (_) async => fakeTdpConfig(
           sustainedW: 22,
@@ -46,6 +54,10 @@ void main() {
       when(() => service.setCpuTempLimit(any())).thenAnswer((_) async {});
       when(() => service.clearPowerLimits()).thenAnswer((_) async {});
       when(() => service.setPerformanceMode(any())).thenAnswer((_) async {});
+    });
+
+    tearDown(() {
+      BackendLogger.resetForTests();
     });
 
     blocTest<TdpBloc, TdpState>(
@@ -116,6 +128,46 @@ void main() {
     );
 
     blocTest<TdpBloc, TdpState>(
+      'seeds settings with current TDP config when none is saved',
+      build: () {
+        when(() => service.getTdpConfig()).thenAnswer(
+          (_) async => fakeTdpConfig(
+            sustainedW: 22,
+            boostW: 33,
+            tempLimitC: 80,
+            activePerformanceMode: 1,
+            powerLimitsEnabled: true,
+          ),
+        );
+        return TdpBloc(service: service, settingsStore: settingsStore);
+      },
+      act: (bloc) => bloc.add(LoadTdpConfig()),
+      expect: () => [
+        isA<TdpLoading>(),
+        isA<TdpLoaded>()
+            .having((s) => s.sustainedW, 'sustainedW', 22)
+            .having((s) => s.boostW, 'boostW', 33)
+            .having((s) => s.tempLimitC, 'tempLimitC', 80)
+            .having((s) => s.powerLimitsEnabled, 'powerLimitsEnabled', true),
+      ],
+      verify: (_) {
+        final saved = settingsStore.savedSettings.last.hardware.tdp;
+        expect(saved?.powerLimitsEnabled, isTrue);
+        expect(saved?.sustainedW, 22);
+        expect(saved?.boostW, 33);
+        expect(saved?.tempLimitEnabled, isTrue);
+        expect(saved?.tempLimitC, 80);
+        verifyNever(
+          () => service.setPowerLimits(
+            sustainedW: any(named: 'sustainedW'),
+            boostW: any(named: 'boostW'),
+          ),
+        );
+        verifyNever(() => service.setCpuTempLimit(any()));
+      },
+    );
+
+    blocTest<TdpBloc, TdpState>(
       'selecting profile switches system mode and reloads restored settings',
       build: () {
         when(() => service.getTdpConfig()).thenAnswer(
@@ -179,6 +231,98 @@ void main() {
       ],
       verify: (_) {
         verify(() => service.clearPowerLimits()).called(1);
+      },
+    );
+
+    blocTest<TdpBloc, TdpState>(
+      'saves applied TDP and temperature settings',
+      build: () => TdpBloc(service: service, settingsStore: settingsStore),
+      seed: () => TdpLoaded(
+        sustainedW: 22,
+        boostW: 33,
+        tempLimitC: 0,
+        powerLimitsEnabled: false,
+        tempLimitEnabled: false,
+      ),
+      act: (bloc) => bloc.add(
+        SetTdpRequested(
+          applyPowerLimits: true,
+          applyTempLimit: true,
+          sustainedW: 25,
+          boostW: 35,
+          tempLimitC: 85,
+        ),
+      ),
+      expect: () => [
+        isA<TdpLoading>(),
+        isA<TdpLoaded>()
+            .having((s) => s.sustainedW, 'sustainedW', 25)
+            .having((s) => s.boostW, 'boostW', 35)
+            .having((s) => s.tempLimitC, 'tempLimitC', 85)
+            .having((s) => s.powerLimitsEnabled, 'powerLimitsEnabled', true)
+            .having((s) => s.tempLimitEnabled, 'tempLimitEnabled', true),
+      ],
+      verify: (_) {
+        final saved = settingsStore.savedSettings.last.hardware.tdp;
+        expect(saved?.powerLimitsEnabled, isTrue);
+        expect(saved?.sustainedW, 25);
+        expect(saved?.boostW, 35);
+        expect(saved?.tempLimitEnabled, isTrue);
+        expect(saved?.tempLimitC, 85);
+      },
+    );
+
+    blocTest<TdpBloc, TdpState>(
+      'logs mismatch and restores saved TDP settings on load',
+      setUp: () {
+        settingsStore = MemoryAppSettingsStore(
+          const AppSettings(
+            hardware: HardwareSettings(
+              tdp: TdpDesiredSettings(
+                powerLimitsEnabled: true,
+                sustainedW: 25,
+                boostW: 35,
+                tempLimitEnabled: true,
+                tempLimitC: 85,
+              ),
+            ),
+          ),
+        );
+        var calls = 0;
+        when(() => service.getTdpConfig()).thenAnswer((_) async {
+          calls += 1;
+          return calls == 1
+              ? fakeTdpConfig(
+                  sustainedW: 18,
+                  boostW: 28,
+                  tempLimitC: 0,
+                  powerLimitsEnabled: false,
+                )
+              : fakeTdpConfig(
+                  sustainedW: 25,
+                  boostW: 35,
+                  tempLimitC: 85,
+                  powerLimitsEnabled: true,
+                );
+        });
+      },
+      build: () => TdpBloc(service: service, settingsStore: settingsStore),
+      act: (bloc) => bloc.add(LoadTdpConfig()),
+      expect: () => [
+        isA<TdpLoading>(),
+        isA<TdpLoaded>()
+            .having((s) => s.sustainedW, 'sustainedW', 25)
+            .having((s) => s.boostW, 'boostW', 35)
+            .having((s) => s.tempLimitC, 'tempLimitC', 85)
+            .having((s) => s.powerLimitsEnabled, 'powerLimitsEnabled', true),
+      ],
+      verify: (_) {
+        verify(
+          () => service.setPowerLimits(sustainedW: 25, boostW: 35),
+        ).called(1);
+        verify(() => service.setCpuTempLimit(85)).called(1);
+        expect(logs.join('\n'), contains('Settings.hardwareMismatch'));
+        expect(logs.join('\n'), contains('tdp.powerLimits'));
       },
     );
 

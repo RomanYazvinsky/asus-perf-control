@@ -9,12 +9,19 @@ import '../blocs/performance/performance_state.dart';
 import '../widgets/mode_selector.dart';
 import '../widgets/copyable_alert.dart';
 import '../widgets/cpu_boost/boost_mode_selector.dart';
+import '../services/settings/app_settings_store.dart';
 
 class HomeScreen extends StatelessWidget {
   final PerformanceBloc? testBloc;
   final CpuBoostBloc? testCpuBoostBloc;
+  final AppSettingsStore? settingsStore;
 
-  const HomeScreen({super.key, this.testBloc, this.testCpuBoostBloc});
+  const HomeScreen({
+    super.key,
+    this.testBloc,
+    this.testCpuBoostBloc,
+    this.settingsStore,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -24,11 +31,15 @@ class HomeScreen extends StatelessWidget {
         providers: [
           BlocProvider(
             create: (context) =>
-                testBloc ?? (PerformanceBloc()..add(LoadCurrentModeEvent())),
+                testBloc ??
+                (PerformanceBloc(settingsStore: settingsStore)
+                  ..add(LoadCurrentModeEvent())),
           ),
           BlocProvider(
             create: (context) =>
-                testCpuBoostBloc ?? (CpuBoostBloc()..add(LoadCpuBoostStatus())),
+                testCpuBoostBloc ??
+                (CpuBoostBloc(settingsStore: settingsStore)
+                  ..add(LoadCpuBoostStatus())),
           ),
         ],
         child: MultiBlocListener(

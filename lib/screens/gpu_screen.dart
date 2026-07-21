@@ -4,19 +4,23 @@ import '../blocs/gpu/gpu_bloc.dart';
 import '../blocs/gpu/gpu_event.dart';
 import '../blocs/gpu/gpu_state.dart';
 import '../services/gpu_service.dart';
+import '../services/settings/app_settings_store.dart';
 import '../widgets/copyable_alert.dart';
 import '../widgets/gpu/gpu_status_card.dart';
 import '../widgets/gpu/gpu_mode_selector.dart';
 
 class GpuScreen extends StatelessWidget {
-  const GpuScreen({super.key});
+  final AppSettingsStore? settingsStore;
+
+  const GpuScreen({super.key, this.settingsStore});
 
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
-      create: (context) =>
-          GpuBloc(gpuService: SupergfxGpuService())
-            ..add(LoadCapabilitiesEvent()),
+      create: (context) => GpuBloc(
+        gpuService: SupergfxGpuService(),
+        settingsStore: settingsStore,
+      )..add(LoadCapabilitiesEvent()),
       child: const GpuView(),
     );
   }

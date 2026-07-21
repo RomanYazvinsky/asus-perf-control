@@ -29,6 +29,22 @@ class FanEngineConfig {
     this.crossFanCurve,
   });
 
+  factory FanEngineConfig.fromJson(Map<String, dynamic> json) {
+    return FanEngineConfig(
+      profile: _profileFromName(json['profile'] as String?),
+      tickMs: _intOrDefault(json['tickMs'], 1000),
+      hysteresisC: _intOrDefault(json['hysteresisC'], 2),
+      rampDownDelayMs: _intOrDefault(json['rampDownDelayMs'], 3000),
+      emergencyTempC: _intOrDefault(json['emergencyTempC'], 95),
+      cpuCurve: _curveFromJson(json['cpuCurve']),
+      gpuCurve: _curveFromJson(json['gpuCurve']),
+      crossFan: json['crossFan'] == true,
+      crossFanCurve: json['crossFanCurve'] == null
+          ? null
+          : _curveFromJson(json['crossFanCurve']),
+    );
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'profile': profile.name,
@@ -44,6 +60,48 @@ class FanEngineConfig {
           : fanCurvePointsToJsonPairs(crossFanCurve!),
     };
   }
+}
+
+PerfProfile _profileFromName(String? name) {
+  for (final profile in PerfProfile.values) {
+    if (profile.name == name) return profile;
+  }
+  return PerfProfile.balanced;
+}
+
+int _intOrDefault(Object? value, int defaultValue) {
+  return value is int ? value : defaultValue;
+}
+
+List<FanCurvePoint> _curveFromJson(Object? value) {
+  if (value is! List) {
+    return _defaultFanCurve();
+  }
+  final points = <FanCurvePoint>[];
+  for (final entry in value) {
+    if (entry is List && entry.length >= 2) {
+      final temp = entry[0];
+      final speed = entry[1];
+      if (temp is num && speed is num) {
+        points.add(
+          FanCurvePoint(
+            tempC: temp.toDouble(),
+            speedPercent: speed.toDouble().clamp(0, 100).toDouble(),
+          ),
+        );
+      }
+    }
+  }
+  return points.length == 8 ? points : _defaultFanCurve();
+}
+
+List<FanCurvePoint> _defaultFanCurve() {
+  return List.generate(8, (index) {
+    return FanCurvePoint(
+      tempC: 20.0 + index * 10.0,
+      speedPercent: 30.0 + (index / 7.0) * 70.0,
+    );
+  });
 }
 
 class FanCapabilities {

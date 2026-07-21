@@ -6,19 +6,23 @@ import '../blocs/fan/fan_state.dart';
 import '../services/fan_service.dart';
 import '../services/asusd_fan_client.dart';
 import '../services/input/ui_input_command.dart';
+import '../services/settings/app_settings_store.dart';
 import '../widgets/fan/fan_curve_editor.dart';
 import '../widgets/copyable_alert.dart';
 import '../widgets/profile_tab_bar.dart';
 import '../widgets/input/gamepad_input_scope.dart';
 
 class FanScreen extends StatelessWidget {
-  const FanScreen({super.key});
+  final AppSettingsStore? settingsStore;
+
+  const FanScreen({super.key, this.settingsStore});
 
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
       create: (context) =>
-          FanBloc(FanServiceImpl())..add(LoadFanCapabilities()),
+          FanBloc(FanServiceImpl(), settingsStore: settingsStore)
+            ..add(LoadFanCapabilities()),
       child: const FanView(),
     );
   }
