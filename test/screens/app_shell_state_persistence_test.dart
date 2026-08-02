@@ -4,8 +4,10 @@ import 'package:flutter_application_1/main.dart';
 import 'package:flutter_application_1/screens/home_screen.dart';
 import 'package:flutter_application_1/screens/tdp_screen.dart';
 import 'package:flutter_application_1/screens/gpu_screen.dart';
+import 'package:flutter_application_1/screens/profiles_screen.dart';
 import 'package:flutter_application_1/screens/xg_mobile_fan_diagnostic_screen.dart';
 import 'package:flutter_application_1/services/settings/app_settings.dart';
+import 'package:flutter_application_1/services/settings/hardware_profile_store.dart';
 
 import '../test_helpers.dart';
 
@@ -64,6 +66,68 @@ void main() {
         findsOneWidget,
       );
     });
+
+    testWidgets('opens profiles page from navigation rail', (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: AppShell()));
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(find.text('Profiles'), findsOneWidget);
+
+      final rail = tester.widget<NavigationRail>(find.byType(NavigationRail));
+      rail.onDestinationSelected?.call(7);
+      await tester.pump(const Duration(milliseconds: 200));
+
+      final switchedRail = tester.widget<NavigationRail>(
+        find.byType(NavigationRail),
+      );
+      expect(switchedRail.selectedIndex, 7);
+      expect(find.byType(ProfilesScreen, skipOffstage: false), findsOneWidget);
+    });
+
+    testWidgets(
+      'applying a profile notifies shell to reload hardware screens',
+      (tester) async {
+        final settings = MemoryAppSettingsStore(
+          const AppSettings(ui: UiSettings(activeHardwareProfileId: 'quiet')),
+        );
+        final profiles = MemoryHardwareProfileStore([
+          const HardwareProfile(
+            id: 'quiet',
+            name: 'Quiet',
+            hardware: HardwareSettings(performanceMode: 0),
+          ),
+          const HardwareProfile(
+            id: 'gaming',
+            name: 'Gaming',
+            hardware: HardwareSettings(performanceMode: 2),
+          ),
+        ]);
+        var reloads = 0;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: AppShell(
+              settingsStore: settings,
+              profileStore: profiles,
+              onProfileReloadForTest: () => reloads += 1,
+            ),
+          ),
+        );
+        await tester.pump(const Duration(milliseconds: 200));
+
+        final rail = tester.widget<NavigationRail>(find.byType(NavigationRail));
+        rail.onDestinationSelected?.call(7);
+        await tester.pump(const Duration(milliseconds: 200));
+        final applyButton = tester.widget<TextButton>(
+          find.byKey(const Key('apply_profile_gaming')),
+        );
+        applyButton.onPressed?.call();
+        await tester.pump(const Duration(milliseconds: 200));
+
+        expect(settings.current.ui.activeHardwareProfileId, 'gaming');
+        expect(reloads, 1);
+      },
+    );
 
     testWidgets('loads selected navigation index from settings on startup', (
       tester,

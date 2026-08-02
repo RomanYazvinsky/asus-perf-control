@@ -1,9 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'screens/battery_screen.dart';
 import 'screens/fan_screen.dart';
 import 'screens/gpu_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/package_updates_screen.dart';
+import 'screens/profiles_screen.dart';
 import 'screens/tdp_screen.dart';
 import 'screens/xg_mobile_fan_diagnostic_screen.dart';
 import 'bridge_generated.dart/frb_generated.dart';
@@ -11,6 +14,7 @@ import 'services/bridge_service.dart';
 import 'services/backend_logger.dart';
 import 'services/input/steam_input_service.dart';
 import 'services/settings/app_settings_store.dart';
+import 'services/settings/hardware_profile_store.dart';
 import 'widgets/copyable_alert.dart';
 import 'widgets/input_diagnostics.dart';
 import 'widgets/input/gamepad_input_scope.dart';
@@ -26,11 +30,23 @@ Future<void> main() async {
 
 class AsusLinuxControlApp extends StatelessWidget {
   final AppSettingsStore? settingsStore;
+  final HardwareProfileStore? profileStore;
 
-  const AsusLinuxControlApp({super.key, this.settingsStore});
+  const AsusLinuxControlApp({super.key, this.settingsStore, this.profileStore});
 
   @override
   Widget build(BuildContext context) {
+    final globalSettingsStore = settingsStore ?? FileAppSettingsStore();
+    final effectiveProfileStore =
+        profileStore ?? _defaultProfileStore(globalSettingsStore);
+    final effectiveSettingsStore =
+        globalSettingsStore is ProfiledAppSettingsStore
+        ? globalSettingsStore
+        : ProfiledAppSettingsStore(
+            globalStore: globalSettingsStore,
+            profileStore: effectiveProfileStore,
+          );
+
     return MaterialApp(
       title: 'ASUS Linux Control',
       navigatorKey: navigatorKey,
@@ -66,15 +82,25 @@ class AsusLinuxControlApp extends StatelessWidget {
           ),
         );
       },
-      home: AppShell(settingsStore: settingsStore ?? FileAppSettingsStore()),
+      home: AppShell(
+        settingsStore: effectiveSettingsStore,
+        profileStore: effectiveProfileStore,
+      ),
     );
   }
 }
 
 class AppShell extends StatefulWidget {
   final AppSettingsStore? settingsStore;
+  final HardwareProfileStore? profileStore;
+  final VoidCallback? onProfileReloadForTest;
 
-  const AppShell({super.key, this.settingsStore});
+  const AppShell({
+    super.key,
+    this.settingsStore,
+    this.profileStore,
+    this.onProfileReloadForTest,
+  });
 
   @override
   State<AppShell> createState() => _AppShellState();
@@ -82,8 +108,10 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   int _selectedIndex = 0;
+  int _profileReloadToken = 0;
   late final AppSettingsStore _settingsStore;
-  late final List<Widget> _screens;
+  late final HardwareProfileStore _profileStore;
+  late List<Widget> _screens;
 
   static const List<NavigationRailDestination> _destinations = [
     NavigationRailDestination(
@@ -121,21 +149,26 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       selectedIcon: Icon(Icons.system_update_alt),
       label: Text('Updates'),
     ),
+    NavigationRailDestination(
+      icon: Icon(Icons.manage_accounts_outlined),
+      selectedIcon: Icon(Icons.manage_accounts),
+      label: Text('Profiles'),
+    ),
   ];
 
   @override
   void initState() {
     super.initState();
-    _settingsStore = widget.settingsStore ?? FileAppSettingsStore();
-    _screens = [
-      HomeScreen(settingsStore: _settingsStore),
-      TdpScreen(settingsStore: _settingsStore),
-      GpuScreen(settingsStore: _settingsStore),
-      FanScreen(settingsStore: _settingsStore),
-      BatteryScreen(settingsStore: _settingsStore),
-      XgMobileFanDiagnosticScreen(),
-      const PackageUpdatesScreen(),
-    ];
+    final globalSettingsStore = widget.settingsStore ?? FileAppSettingsStore();
+    _profileStore =
+        widget.profileStore ?? _defaultProfileStore(globalSettingsStore);
+    _settingsStore = globalSettingsStore is ProfiledAppSettingsStore
+        ? globalSettingsStore
+        : ProfiledAppSettingsStore(
+            globalStore: globalSettingsStore,
+            profileStore: _profileStore,
+          );
+    _screens = _buildScreens();
     WidgetsBinding.instance.addObserver(this);
     _loadSavedSettings();
   }
@@ -200,4 +233,53 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       );
     });
   }
+
+  List<Widget> _buildScreens() {
+    return [
+      HomeScreen(
+        key: ValueKey('home_$_profileReloadToken'),
+        settingsStore: _settingsStore,
+      ),
+      TdpScreen(
+        key: ValueKey('tdp_$_profileReloadToken'),
+        settingsStore: _settingsStore,
+      ),
+      GpuScreen(
+        key: ValueKey('gpu_$_profileReloadToken'),
+        settingsStore: _settingsStore,
+      ),
+      FanScreen(
+        key: ValueKey('fan_$_profileReloadToken'),
+        settingsStore: _settingsStore,
+      ),
+      BatteryScreen(
+        key: ValueKey('battery_$_profileReloadToken'),
+        settingsStore: _settingsStore,
+      ),
+      XgMobileFanDiagnosticScreen(),
+      const PackageUpdatesScreen(),
+      ProfilesScreen(
+        settingsStore: _settingsStore,
+        profileStore: _profileStore,
+        onProfileApplied: _reloadHardwareScreensForProfile,
+      ),
+    ];
+  }
+
+  void _reloadHardwareScreensForProfile() {
+    setState(() {
+      _profileReloadToken += 1;
+      _screens = _buildScreens();
+    });
+    widget.onProfileReloadForTest?.call();
+  }
+}
+
+FileHardwareProfileStore _defaultProfileStore(AppSettingsStore settingsStore) {
+  final settingsFile = settingsStore is FileAppSettingsStore
+      ? settingsStore.file
+      : FileAppSettingsStore.defaultSettingsFile();
+  return FileHardwareProfileStore(
+    directory: Directory('${settingsFile.parent.path}/profiles'),
+  );
 }

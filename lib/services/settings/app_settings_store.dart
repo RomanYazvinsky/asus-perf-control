@@ -3,6 +3,7 @@ import 'dart:io';
 
 import '../backend_logger.dart';
 import 'app_settings.dart';
+import 'hardware_profile_store.dart';
 import 'settings_migration.dart';
 
 abstract class AppSettingsStore {
@@ -23,6 +24,7 @@ class FileAppSettingsStore implements AppSettingsStore {
           migrator ??
           const SettingsMigrator(
             currentVersion: AppSettings.currentSchemaVersion,
+            migrations: [_SettingsV1ToV2Migration()],
           );
 
   @override
@@ -103,5 +105,118 @@ class FileAppSettingsStore implements AppSettingsStore {
       'Settings.readMismatch',
       fields: {'file': file.path, 'issue': issue},
     );
+  }
+}
+
+class ProfiledAppSettingsStore implements AppSettingsStore {
+  final AppSettingsStore globalStore;
+  final HardwareProfileStore profileStore;
+  Future<void> _pendingUpdate = Future<void>.value();
+
+  ProfiledAppSettingsStore({
+    required this.globalStore,
+    required this.profileStore,
+  });
+
+  @override
+  Future<AppSettings> load() async {
+    final global = await globalStore.load();
+    return _withActiveProfileHardware(global);
+  }
+
+  @override
+  Future<void> save(AppSettings settings) async {
+    final global = await globalStore.load();
+    final activeProfileId = settings.ui.activeHardwareProfileId;
+    if (activeProfileId == null) {
+      await globalStore.save(settings);
+      return;
+    }
+
+    final profile = await profileStore.load(activeProfileId);
+    if (profile == null) {
+      await globalStore.save(settings);
+      return;
+    }
+
+    await globalStore.save(
+      global.copyWith(schemaVersion: settings.schemaVersion, ui: settings.ui),
+    );
+    await profileStore.save(profile.copyWith(hardware: settings.hardware));
+  }
+
+  @override
+  Future<AppSettings> update(
+    AppSettings Function(AppSettings settings) update,
+  ) async {
+    late AppSettings next;
+    _pendingUpdate = _pendingUpdate.then((_) async {
+      final global = await globalStore.load();
+      final current = await _withActiveProfileHardware(global);
+      next = update(current);
+
+      final previousProfileId = current.ui.activeHardwareProfileId;
+      final nextProfileId = next.ui.activeHardwareProfileId;
+      if (nextProfileId == null) {
+        await globalStore.save(next);
+        return;
+      }
+
+      final profile = await profileStore.load(nextProfileId);
+      if (profile == null) {
+        await globalStore.save(next);
+        return;
+      }
+
+      await globalStore.save(
+        global.copyWith(schemaVersion: next.schemaVersion, ui: next.ui),
+      );
+
+      final profileChanged = nextProfileId != previousProfileId;
+      final hardwareChanged = next.hardware != current.hardware;
+      if (!profileChanged || hardwareChanged) {
+        await profileStore.save(profile.copyWith(hardware: next.hardware));
+      }
+    });
+    await _pendingUpdate;
+    return next;
+  }
+
+  Future<AppSettings> _withActiveProfileHardware(AppSettings global) async {
+    final activeProfileId = global.ui.activeHardwareProfileId;
+    if (activeProfileId == null) return global;
+
+    final profile = await profileStore.load(activeProfileId);
+    if (profile == null) return global;
+    return global.copyWith(hardware: profile.hardware);
+  }
+}
+
+class _SettingsV1ToV2Migration implements SettingsMigration {
+  const _SettingsV1ToV2Migration();
+
+  @override
+  int get fromVersion => 1;
+
+  @override
+  int get toVersion => 2;
+
+  @override
+  Map<String, dynamic> migrate(Map<String, dynamic> source) {
+    final migrated = Map<String, dynamic>.from(source);
+    migrated['schemaVersion'] = toVersion;
+    return migrated;
+  }
+
+  @override
+  Map<String, dynamic> rollback(Map<String, dynamic> source) {
+    final rolledBack = Map<String, dynamic>.from(source);
+    rolledBack['schemaVersion'] = fromVersion;
+    final ui = Map<String, dynamic>.from(
+      rolledBack['ui'] as Map<String, dynamic>? ?? const {},
+    );
+    ui.remove('activeHardwareProfileId');
+    rolledBack['ui'] = ui;
+    return rolledBack;
   }
 }

@@ -117,6 +117,29 @@ void main() {
       expect(logs.join('\n'), contains('hardware.batteryChargeLimit'));
     });
 
+    test('migrates schema version 1 settings to version 2', () async {
+      await settingsFile.parent.create(recursive: true);
+      await settingsFile.writeAsString(
+        jsonEncode({
+          'schemaVersion': 1,
+          'ui': {'selectedNavigationIndex': 2},
+          'hardware': {'performanceMode': 1},
+        }),
+      );
+      final store = FileAppSettingsStore(file: settingsFile);
+
+      final settings = await store.load();
+      final migratedJson = jsonDecode(await settingsFile.readAsString());
+
+      expect(AppSettings.currentSchemaVersion, 2);
+      expect(settings.schemaVersion, 2);
+      expect(settings.ui.selectedNavigationIndex, 2);
+      expect(settings.ui.activeHardwareProfileId, isNull);
+      expect(settings.hardware.performanceMode, 1);
+      expect(migratedJson['schemaVersion'], 2);
+      expect(migratedJson['ui'].containsKey('activeHardwareProfileId'), false);
+    });
+
     test('migrates older JSON and can roll the migrated JSON back', () async {
       final migrator = SettingsMigrator(
         currentVersion: 2,

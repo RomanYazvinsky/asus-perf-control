@@ -1,5 +1,5 @@
 class AppSettings {
-  static const int currentSchemaVersion = 1;
+  static const int currentSchemaVersion = 2;
   static const defaults = AppSettings();
 
   final int schemaVersion;
@@ -66,8 +66,12 @@ class AppSettings {
 
 class UiSettings {
   final int selectedNavigationIndex;
+  final String? activeHardwareProfileId;
 
-  const UiSettings({this.selectedNavigationIndex = 0});
+  const UiSettings({
+    this.selectedNavigationIndex = 0,
+    this.activeHardwareProfileId,
+  });
 
   factory UiSettings.fromJson(Map<String, dynamic> json, List<String>? issues) {
     return UiSettings(
@@ -80,28 +84,46 @@ class UiSettings {
         issues: issues,
         path: 'ui.selectedNavigationIndex',
       ),
+      activeHardwareProfileId: _readOptionalString(
+        json,
+        'activeHardwareProfileId',
+        issues: issues,
+        path: 'ui.activeHardwareProfileId',
+      ),
     );
   }
 
   Map<String, dynamic> toJson() {
-    return {'selectedNavigationIndex': selectedNavigationIndex};
+    return {
+      'selectedNavigationIndex': selectedNavigationIndex,
+      if (activeHardwareProfileId != null)
+        'activeHardwareProfileId': activeHardwareProfileId,
+    };
   }
 
-  UiSettings copyWith({int? selectedNavigationIndex}) {
+  UiSettings copyWith({
+    int? selectedNavigationIndex,
+    Object? activeHardwareProfileId = _unset,
+  }) {
     return UiSettings(
       selectedNavigationIndex:
           selectedNavigationIndex ?? this.selectedNavigationIndex,
+      activeHardwareProfileId: identical(activeHardwareProfileId, _unset)
+          ? this.activeHardwareProfileId
+          : activeHardwareProfileId as String?,
     );
   }
 
   @override
   bool operator ==(Object other) {
     return other is UiSettings &&
-        other.selectedNavigationIndex == selectedNavigationIndex;
+        other.selectedNavigationIndex == selectedNavigationIndex &&
+        other.activeHardwareProfileId == activeHardwareProfileId;
   }
 
   @override
-  int get hashCode => selectedNavigationIndex.hashCode;
+  int get hashCode =>
+      Object.hash(selectedNavigationIndex, activeHardwareProfileId);
 }
 
 class HardwareSettings {
