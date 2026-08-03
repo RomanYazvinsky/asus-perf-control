@@ -24,6 +24,15 @@ void main() {
     expect(config, contains('send_member="CancelUpdate"'));
   });
 
+  test('D-Bus config exposes ROG hotkey status and press signals', () {
+    final config = File(
+      'install/dbus/com.asuslinuxcontrol.Daemon.conf',
+    ).readAsStringSync();
+
+    expect(config, contains('send_member="GetRogHotkeyStatus"'));
+    expect(config, contains('receive_member="RogKeyPressed"'));
+  });
+
   test('polkit policy requires admin authentication for package updates', () {
     final policy = File(
       'install/dbus/com.asuslinuxcontrol.Daemon.policy',

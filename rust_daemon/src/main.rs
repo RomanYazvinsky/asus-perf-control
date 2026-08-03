@@ -4,6 +4,8 @@ mod fan_engine;
 mod hardware;
 mod package_updates;
 mod polkit;
+mod rog_hotkey;
+mod rog_input;
 
 use fan_engine::config::{
     clear_saved_fan_engine_config, read_saved_fan_engine_config, save_fan_engine_config,
@@ -39,6 +41,7 @@ const PROFILE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 struct AsusControlDaemon {
     fan_engine: Mutex<FanEngineController>,
     package_update_jobs: UpdateJobManager,
+    rog_hotkey_status_json: String,
 }
 
 async fn authorize_fan_engine_write(
@@ -234,6 +237,14 @@ async fn monitor_platform_profile_changes(conn: zbus::Connection) {
 
 #[interface(name = "com.asuslinuxcontrol.Daemon")]
 impl AsusControlDaemon {
+    /// Read ROG hotkey runtime diagnostics.
+    async fn get_rog_hotkey_status(&self) -> String {
+        self.rog_hotkey_status_json.clone()
+    }
+
+    #[zbus(signal)]
+    async fn rog_key_pressed(signal_context: &zbus::SignalContext<'_>) -> zbus::Result<()>;
+
     /// Start dynamic fan engine from JSON config.
     async fn start_fan_engine(
         &self,
@@ -563,11 +574,15 @@ async fn main() -> Result<()> {
         Ok(Box::new(SysfsFanHardwareAdapter::discover()?) as Box<dyn FanHardwareAdapter>)
     }));
 
+    let (mut rog_hotkey_handle, rog_hotkey_status, mut rog_press_receiver) = rog_hotkey::start()?;
+    let rog_hotkey_status_json = rog_hotkey_status.to_json()?;
+
     let daemon = AsusControlDaemon {
         fan_engine: Mutex::new(FanEngineController::new_with_driver(Box::new(
             fan_engine_driver,
         ))),
         package_update_jobs: UpdateJobManager::new(),
+        rog_hotkey_status_json,
     };
 
     if let Err(e) = restore_saved_fan_engine_on_startup(&daemon) {
@@ -585,6 +600,24 @@ async fn main() -> Result<()> {
         .await?;
 
     info!("ASUS Control Daemon started successfully");
+
+    let rog_signal_connection = _conn.clone();
+    tokio::spawn(async move {
+        let signal_context = match zbus::SignalContext::new(&rog_signal_connection, OBJECT_PATH) {
+            Ok(context) => context,
+            Err(error) => {
+                error!("Failed to create ROG hotkey signal context: {error}");
+                return;
+            }
+        };
+
+        while rog_press_receiver.recv().await.is_some() {
+            info!("Accepted ROG key press; emitting D-Bus signal");
+            if let Err(error) = AsusControlDaemon::rog_key_pressed(&signal_context).await {
+                error!("Failed to emit RogKeyPressed signal: {error}");
+            }
+        }
+    });
 
     // Apply saved temperature limit for the active platform profile on startup.
     if let Err(e) = apply_active_profile_temp_limit(&_conn).await {
@@ -606,8 +639,16 @@ async fn main() -> Result<()> {
         // Continue anyway - not critical
     }
 
-    // Keep the daemon running
-    std::future::pending::<()>().await;
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        _ = sigint.recv() => info!("SIGINT received; shutting down"),
+        _ = sigterm.recv() => info!("SIGTERM received; shutting down"),
+    }
+
+    if let Err(error) = rog_hotkey_handle.shutdown() {
+        error!("Failed to restore ROG firmware binding during shutdown: {error:#}");
+    }
 
     Ok(())
 }
