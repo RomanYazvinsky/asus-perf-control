@@ -36,7 +36,8 @@ system daemon and the per-user hotkey agent.
    journalctl -u asus-control-daemon.service -n 100 --no-pager
    ```
 
-7. On unsupported firmware, verify discovery performs no feature-report write
+7. On unsupported firmware, verify discovery performs no binding-update/set request
+   (the read-only protocol probe may send a query feature report)
    and `GetRogHotkeyStatus` reports the hardware error with fallback disabled.
    Only for diagnosis, enable the explicit override in a systemd service
    override, restart the daemon, and confirm the diagnostic status reports

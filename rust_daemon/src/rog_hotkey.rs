@@ -1,7 +1,10 @@
 use crate::hardware::rog_mkey::{FirmwareBindingGuard, HidMKeyTransport};
-use crate::rog_input::{monitor_once, receiver_disconnected, KEY_PROG1, ROG_INPUT_PATH, ROG_SCAN};
+use crate::rog_input::{
+    monitor_device_once, open_input_device, receiver_disconnected, KEY_PROG1, ROG_INPUT_PATH,
+    ROG_SCAN,
+};
 use anyhow::{anyhow, Result};
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -14,6 +17,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 const FALLBACK_ENV: &str = "ASUS_ROG_HOTKEY_SOFTWARE_FALLBACK";
+const ENABLED_ENV: &str = "ASUS_ROG_HOTKEY_ENABLED";
 const RESTORE_ATTEMPTS: usize = 3;
 const RESTORE_RETRY_DELAY: Duration = Duration::from_millis(100);
 pub const HEALTHY_SESSION: Duration = Duration::from_secs(10);
@@ -152,6 +156,30 @@ pub fn fallback_enabled(value: Option<&str>) -> bool {
     value == Some("1")
 }
 
+pub fn hotkey_enabled(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+pub fn preflight_then_prepare<D, P, Open, Prepare>(open: Open, prepare: Prepare) -> Result<(D, P)>
+where
+    Open: FnOnce() -> Result<D>,
+    Prepare: FnOnce() -> Result<P>,
+{
+    let device = open()?;
+    let prepared = prepare()?;
+    Ok((device, prepared))
+}
+
+pub fn take_initial_or_open<D, Open>(initial: &mut Option<D>, open: Open) -> Result<D>
+where
+    Open: FnOnce() -> Result<D>,
+{
+    match initial.take() {
+        Some(device) => Ok(device),
+        None => open(),
+    }
+}
+
 pub fn monitor_policy(hardware_supported: bool, fallback_requested: bool) -> MonitorPolicy {
     MonitorPolicy {
         start_monitor: hardware_supported || fallback_requested,
@@ -255,6 +283,7 @@ impl RogHotkeyHandle {
                     Ok(()) => {
                         if self.status.snapshot().restoration_state == "pending" {
                             self.status.set_restoration_state("restored");
+                            info!("restored original ROG firmware binding");
                         }
                         self.restorer = None;
                         last_error = None;
@@ -352,6 +381,7 @@ fn run_monitor_supervisor(
     sender: Sender<()>,
     cancellation: UnixStream,
     status: RogHotkeyStatusStore,
+    mut initial_device: Option<evdev::Device>,
 ) {
     let mut consecutive_failures = 0_u64;
     let dropped = status.dropped_counter();
@@ -361,20 +391,26 @@ fn run_monitor_supervisor(
         let opened_at = Arc::new(Mutex::new(None));
         let opened_for_callback = opened_at.clone();
         let status_for_callback = status.clone();
-        let result = monitor_once(
-            ROG_INPUT_PATH,
-            sender.clone(),
-            shutdown.clone(),
-            dropped.clone(),
-            &cancellation,
-            move || {
-                *opened_for_callback
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
-                status_for_callback.set_monitor_state("running");
-                status_for_callback.set_last_error(None);
-            },
-        );
+        let on_open = move || {
+            *opened_for_callback
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+            status_for_callback.set_monitor_state("running");
+            status_for_callback.set_last_error(None);
+        };
+        let result =
+            take_initial_or_open(&mut initial_device, || open_input_device(ROG_INPUT_PATH))
+                .and_then(|device| {
+                    monitor_device_once(
+                        device,
+                        ROG_INPUT_PATH,
+                        sender.clone(),
+                        shutdown.clone(),
+                        dropped.clone(),
+                        &cancellation,
+                        on_open,
+                    )
+                });
 
         if shutdown.load(Ordering::Acquire) {
             break;
@@ -415,32 +451,57 @@ fn run_monitor_supervisor(
 }
 
 pub fn start(status_store: RogHotkeyStatusStore) -> Result<(RogHotkeyHandle, Receiver<()>)> {
+    if !hotkey_enabled(std::env::var(ENABLED_ENV).ok().as_deref()) {
+        status_store.replace(RogHotkeyStatus::unsupported(
+            "ROG hotkey runtime disabled; set ASUS_ROG_HOTKEY_ENABLED=1 to enable it",
+        ));
+        let (sender, receiver) = mpsc::channel(1);
+        drop(sender);
+        return Ok((
+            RogHotkeyHandle {
+                restorer: None,
+                shutdown: Arc::new(AtomicBool::new(false)),
+                monitor_thread: None,
+                cancellation: None,
+                status: status_store,
+                cleanup_attempted: false,
+            },
+            receiver,
+        ));
+    }
+
     let fallback_requested = fallback_enabled(std::env::var(FALLBACK_ENV).ok().as_deref());
     let shutdown = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::channel(1);
     let (cancellation_read, cancellation_write) = UnixStream::pair()?;
 
-    let (restorer, status) = match HidMKeyTransport::discover_and_probe() {
-        Ok((transport, layout)) => {
-            let identity = transport.identity().to_string();
-            let guard = require_prepared(FirmwareBindingGuard::prepare(transport, &layout))?;
-            let firmware_changed = guard.changed();
-            (
-                Some(Box::new(guard) as Box<dyn FirmwareRestorer>),
-                RogHotkeyStatus::supported(identity, firmware_changed),
-            )
-        }
-        Err(error) => {
-            let mut status = RogHotkeyStatus::unsupported(format!(
-                "failed to discover and probe ROG hardware: {error:#}"
-            ));
-            status.fallback_enabled = fallback_requested;
-            if fallback_requested {
-                status.monitor_state = "starting".to_string();
-            }
-            (None, status)
-        }
-    };
+    let (initial_device, (restorer, status)) = preflight_then_prepare(
+        || open_input_device(ROG_INPUT_PATH),
+        || {
+            Ok(match HidMKeyTransport::discover_and_probe() {
+                Ok((transport, layout)) => {
+                    let identity = transport.identity().to_string();
+                    let guard =
+                        require_prepared(FirmwareBindingGuard::prepare(transport, &layout))?;
+                    let firmware_changed = guard.changed();
+                    (
+                        Some(Box::new(guard) as Box<dyn FirmwareRestorer>),
+                        RogHotkeyStatus::supported(identity, firmware_changed),
+                    )
+                }
+                Err(error) => {
+                    let mut status = RogHotkeyStatus::unsupported(format!(
+                        "failed to discover and probe ROG hardware: {error:#}"
+                    ));
+                    status.fallback_enabled = fallback_requested;
+                    if fallback_requested {
+                        status.monitor_state = "starting".to_string();
+                    }
+                    (None, status)
+                }
+            })
+        },
+    )?;
 
     let policy = monitor_policy(status.hardware_supported, fallback_requested);
     status_store.replace(status);
@@ -451,13 +512,20 @@ pub fn start(status_store: RogHotkeyStatusStore) -> Result<(RogHotkeyHandle, Rec
         let monitor_thread = thread::Builder::new()
             .name("rog-hotkey-monitor".to_string())
             .spawn(move || {
-                run_monitor_supervisor(thread_shutdown, sender, cancellation_read, thread_status)
+                run_monitor_supervisor(
+                    thread_shutdown,
+                    sender,
+                    cancellation_read,
+                    thread_status,
+                    Some(initial_device),
+                )
             });
         let mut handle =
             handle_after_monitor_spawn(restorer, shutdown, status.clone(), monitor_thread)?;
         handle.cancellation = Some(cancellation_write);
         handle
     } else {
+        drop(initial_device);
         drop(sender);
         drop(cancellation_read);
         drop(cancellation_write);

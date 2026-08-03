@@ -4,7 +4,10 @@
 mod hotkey_agent;
 
 use futures_util::{future::BoxFuture, stream};
-use hotkey_agent::{activate_app, process_signals, CommandRunner, ProcessCommandRunner};
+use hotkey_agent::{
+    activate_app, process_signals, ActivationGate, CommandRunner, ProcessCommandRunner,
+};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 #[derive(Default)]
@@ -36,6 +39,26 @@ impl CommandRunner for FakeRunner {
 
             Ok(())
         })
+    }
+}
+
+struct FakeGate {
+    results: VecDeque<anyhow::Result<bool>>,
+    checks: usize,
+}
+
+impl ActivationGate for FakeGate {
+    fn allows_activation(&mut self) -> BoxFuture<'_, anyhow::Result<bool>> {
+        self.checks += 1;
+        let result = self.results.pop_front().unwrap_or(Ok(false));
+        Box::pin(async move { result })
+    }
+}
+
+fn allowing_gate(count: usize) -> FakeGate {
+    FakeGate {
+        results: (0..count).map(|_| Ok(true)).collect(),
+        checks: 0,
     }
 }
 
@@ -93,8 +116,11 @@ async fn signal_loop_continues_after_an_activation_failure() {
         failures_remaining: 1,
         ..FakeRunner::default()
     };
+    let mut gate = allowing_gate(2);
 
-    let error = process_signals(signals, &mut runner).await.unwrap_err();
+    let error = process_signals(signals, &mut runner, &mut gate)
+        .await
+        .unwrap_err();
 
     assert_eq!(runner.calls.len(), 2);
     assert!(error.to_string().contains("ended unexpectedly"));
@@ -110,10 +136,52 @@ async fn signal_loop_continues_after_an_activation_failure() {
 async fn signal_stream_eof_requests_a_supervisor_restart() {
     let signals = stream::empty::<()>();
     let mut runner = FakeRunner::default();
+    let mut gate = allowing_gate(0);
 
-    let error = process_signals(signals, &mut runner).await.unwrap_err();
+    let error = process_signals(signals, &mut runner, &mut gate)
+        .await
+        .unwrap_err();
 
     assert!(error.to_string().contains("ended unexpectedly"));
+}
+
+#[tokio::test]
+async fn matching_active_seat_uid_activates_gui() {
+    let mut runner = FakeRunner::default();
+    let mut gate = allowing_gate(1);
+
+    let _ = process_signals(stream::iter([()]), &mut runner, &mut gate).await;
+
+    assert_eq!(gate.checks, 1);
+    assert_eq!(runner.calls.len(), 1);
+}
+
+#[tokio::test]
+async fn different_active_seat_uid_skips_gui_activation() {
+    let mut runner = FakeRunner::default();
+    let mut gate = FakeGate {
+        results: VecDeque::from([Ok(false)]),
+        checks: 0,
+    };
+
+    let _ = process_signals(stream::iter([()]), &mut runner, &mut gate).await;
+
+    assert_eq!(gate.checks, 1);
+    assert!(runner.calls.is_empty());
+}
+
+#[tokio::test]
+async fn gate_error_skips_then_next_signal_retries_gate() {
+    let mut runner = FakeRunner::default();
+    let mut gate = FakeGate {
+        results: VecDeque::from([Err(anyhow::anyhow!("logind unavailable")), Ok(true)]),
+        checks: 0,
+    };
+
+    let _ = process_signals(stream::iter([(), ()]), &mut runner, &mut gate).await;
+
+    assert_eq!(gate.checks, 2);
+    assert_eq!(runner.calls.len(), 1);
 }
 
 #[test]

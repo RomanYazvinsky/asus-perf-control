@@ -161,10 +161,21 @@ pub fn try_emit_press(sender: &Sender<()>, dropped: &AtomicU64) -> Result<()> {
     }
 }
 
-/// Opens and monitors one input device instance without grabbing it.
-///
-/// Nonblocking reads keep shutdown latency bounded. The supervisor owns retry/backoff.
-pub fn monitor_once<F>(
+pub fn open_input_device(path: impl AsRef<Path>) -> Result<evdev::Device> {
+    let path = path.as_ref();
+    let device = evdev::Device::open(path)
+        .with_context(|| format!("failed to open ROG input device {}", path.display()))?;
+    device.set_nonblocking(true).with_context(|| {
+        format!(
+            "failed to make ROG input device {} nonblocking",
+            path.display()
+        )
+    })?;
+    Ok(device)
+}
+
+pub fn monitor_device_once<F>(
+    mut device: evdev::Device,
     path: impl AsRef<Path>,
     sender: Sender<()>,
     shutdown: Arc<AtomicBool>,
@@ -176,14 +187,6 @@ where
     F: FnOnce(),
 {
     let path = path.as_ref();
-    let mut device = evdev::Device::open(path)
-        .with_context(|| format!("failed to open ROG input device {}", path.display()))?;
-    device.set_nonblocking(true).with_context(|| {
-        format!(
-            "failed to make ROG input device {} nonblocking",
-            path.display()
-        )
-    })?;
     on_open();
     let mut matcher = RogEventMatcher::new(Duration::from_millis(300));
 
@@ -195,9 +198,7 @@ where
         }
         let events = match device.fetch_events() {
             Ok(events) => events,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                continue;
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!("failed to read ROG input device {}", path.display())
@@ -218,4 +219,24 @@ where
     }
 
     Ok(())
+}
+
+/// Opens and monitors one input device instance without grabbing it.
+///
+/// Nonblocking reads keep shutdown latency bounded. The supervisor owns retry/backoff.
+#[allow(dead_code)]
+pub fn monitor_once<F>(
+    path: impl AsRef<Path>,
+    sender: Sender<()>,
+    shutdown: Arc<AtomicBool>,
+    dropped: Arc<AtomicU64>,
+    cancel: &UnixStream,
+    on_open: F,
+) -> Result<()>
+where
+    F: FnOnce(),
+{
+    let path = path.as_ref();
+    let device = open_input_device(path)?;
+    monitor_device_once(device, path, sender, shutdown, dropped, cancel, on_open)
 }

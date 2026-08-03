@@ -52,6 +52,7 @@ install -dm0755 %{buildroot}/usr/share/applications
 install -dm0755 %{buildroot}/usr/share/icons/hicolor/256x256/apps
 install -dm0755 %{buildroot}/usr/share/metainfo
 install -dm0755 %{buildroot}/usr/lib/systemd/system
+install -dm0755 %{buildroot}/usr/lib/systemd/system/asus-control-daemon.service.d
 install -dm0755 %{buildroot}/usr/lib/systemd/user/graphical-session.target.wants
 install -dm0755 %{buildroot}/usr/share/dbus-1/system-services
 install -dm0755 %{buildroot}/usr/share/dbus-1/system.d
@@ -79,6 +80,8 @@ install -Dm0644 install/systemd/asus-control-hotkey-agent.service \
   %{buildroot}/usr/lib/systemd/user/asus-control-hotkey-agent.service
 ln -s ../asus-control-hotkey-agent.service \
   %{buildroot}/usr/lib/systemd/user/graphical-session.target.wants/asus-control-hotkey-agent.service
+install -Dm0644 install/systemd/asus-control-daemon.service.d/rog-hotkey.conf \
+  %{buildroot}/usr/lib/systemd/system/asus-control-daemon.service.d/rog-hotkey.conf
 
 install -Dm0755 rust_daemon/target/release/asus-control-daemon \
   %{buildroot}/usr/lib/asus-linux-control/asus-control-daemon
@@ -105,12 +108,16 @@ echo "Run 'sudo systemctl enable --now asus-control-daemon.service' to start ASU
 
 %post gui
 %systemd_user_post asus-control-hotkey-agent.service
+systemctl daemon-reload >/dev/null 2>&1 || :
+systemctl try-restart asus-control-daemon.service >/dev/null 2>&1 || :
 
 %preun gui
 %systemd_user_preun asus-control-hotkey-agent.service
 
 %postun gui
 %systemd_user_postun_with_restart asus-control-hotkey-agent.service
+systemctl daemon-reload >/dev/null 2>&1 || :
+systemctl try-restart asus-control-daemon.service >/dev/null 2>&1 || :
 
 %files
 %doc README.md
@@ -124,6 +131,7 @@ echo "Run 'sudo systemctl enable --now asus-control-daemon.service' to start ASU
 /usr/lib/asus-linux-control/asus-control-hotkey-agent
 /usr/lib/systemd/user/asus-control-hotkey-agent.service
 /usr/lib/systemd/user/graphical-session.target.wants/asus-control-hotkey-agent.service
+/usr/lib/systemd/system/asus-control-daemon.service.d/rog-hotkey.conf
 
 %files daemon
 /usr/lib/asus-linux-control/asus-control-daemon

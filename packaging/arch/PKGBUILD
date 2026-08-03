@@ -41,6 +41,8 @@ package_asus-linux-control-gui() {
   install -dm755 "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants"
   ln -s ../asus-control-hotkey-agent.service \
     "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/asus-control-hotkey-agent.service"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/install/systemd/asus-control-daemon.service.d/rog-hotkey.conf" \
+    "$pkgdir/usr/lib/systemd/system/asus-control-daemon.service.d/rog-hotkey.conf"
 }
 
 package_asus-linux-control-daemon() {

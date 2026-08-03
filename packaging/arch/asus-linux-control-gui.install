@@ -27,12 +27,19 @@ _manage_hotkey_agent_for_graphical_users() {
   return 0
 }
 
+_refresh_system_hotkey_runtime() {
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl try-restart asus-control-daemon.service >/dev/null 2>&1 || true
+}
+
 post_install() {
   _manage_hotkey_agent_for_graphical_users refresh
+  _refresh_system_hotkey_runtime
 }
 
 post_upgrade() {
   _manage_hotkey_agent_for_graphical_users refresh
+  _refresh_system_hotkey_runtime
 }
 
 pre_remove() {
@@ -41,4 +48,5 @@ pre_remove() {
 
 post_remove() {
   _manage_hotkey_agent_for_graphical_users reload
+  _refresh_system_hotkey_runtime
 }

@@ -178,6 +178,14 @@ fi
 
 # Install and enable boot-time systemd service. D-Bus activation remains as a fallback,
 # but reboot restore needs the daemon to run before the app is opened.
+ROG_HOTKEY_DROPIN_DIR="/etc/systemd/system/asus-control-daemon.service.d"
+if [ -f "$SYSTEMD_DIR/asus-control-daemon.service.d/rog-hotkey.conf" ]; then
+    install -d -m 0755 "$ROG_HOTKEY_DROPIN_DIR"
+    install -m 0644 "$SYSTEMD_DIR/asus-control-daemon.service.d/rog-hotkey.conf" \
+        "$ROG_HOTKEY_DROPIN_DIR/rog-hotkey.conf"
+    echo -e "${GREEN}✓ ROG hotkey daemon opt-in installed${NC}"
+fi
+
 if [ -f "$SYSTEMD_DIR/asus-control-daemon.service" ]; then
     install -m 0644 "$SYSTEMD_DIR/asus-control-daemon.service" /etc/systemd/system/
     systemctl daemon-reload

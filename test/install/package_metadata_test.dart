@@ -327,5 +327,72 @@ void main() {
         isNot(matches(RegExp(r'^\s*systemctl --user', multiLine: true))),
       );
     });
+
+    test('GUI packages own the explicit ROG daemon opt-in drop-in', () {
+      final dropIn = File(
+        'install/systemd/asus-control-daemon.service.d/rog-hotkey.conf',
+      );
+      expect(dropIn.existsSync(), isTrue);
+      expect(
+        dropIn.readAsStringSync(),
+        contains('Environment=ASUS_ROG_HOTKEY_ENABLED=1'),
+      );
+
+      final pkgbuild = File('packaging/arch/PKGBUILD').readAsStringSync();
+      final spec = File(
+        'packaging/rpm/asus-linux-control.spec',
+      ).readAsStringSync();
+      final archGui = pkgbuild.substring(
+        pkgbuild.indexOf('package_asus-linux-control-gui()'),
+        pkgbuild.indexOf('package_asus-linux-control-daemon()'),
+      );
+      final archDaemon = pkgbuild.substring(
+        pkgbuild.indexOf('package_asus-linux-control-daemon()'),
+      );
+      final rpmGui = spec.substring(
+        spec.indexOf('%files gui'),
+        spec.indexOf('%files daemon'),
+      );
+      final rpmDaemon = spec.substring(spec.indexOf('%files daemon'));
+
+      expect(archGui, contains('rog-hotkey.conf'));
+      expect(rpmGui, contains('rog-hotkey.conf'));
+      expect(archDaemon, isNot(contains('rog-hotkey.conf')));
+      expect(rpmDaemon, isNot(contains('rog-hotkey.conf')));
+    });
+
+    test('GUI package lifecycle reloads and try-restarts active daemon', () {
+      final archHook = File(
+        'packaging/arch/asus-linux-control-gui.install',
+      ).readAsStringSync();
+      final spec = File(
+        'packaging/rpm/asus-linux-control.spec',
+      ).readAsStringSync();
+
+      expect(archHook, contains('systemctl daemon-reload'));
+      expect(
+        archHook,
+        contains('systemctl try-restart asus-control-daemon.service'),
+      );
+      expect(spec, contains('systemctl daemon-reload'));
+      expect(
+        spec,
+        contains('systemctl try-restart asus-control-daemon.service'),
+      );
+      expect(archHook, isNot(contains('systemctl start asus-control-daemon')));
+      expect(spec, isNot(contains('systemctl start asus-control-daemon')));
+    });
+
+    test('direct installer installs ROG opt-in before daemon startup', () {
+      final installer = File('install/install.sh').readAsStringSync();
+      final dropIn = installer.indexOf('rog-hotkey.conf');
+      final daemonStart = installer.indexOf(
+        'systemctl enable --now asus-control-daemon.service',
+      );
+
+      expect(dropIn, greaterThanOrEqualTo(0));
+      expect(installer, contains('install -m 0644'));
+      expect(dropIn, lessThan(daemonStart));
+    });
   });
 }

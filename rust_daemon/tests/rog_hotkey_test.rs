@@ -9,9 +9,10 @@ mod rog_input;
 
 use anyhow::{anyhow, Result};
 use rog_hotkey::{
-    fallback_enabled, handle_after_monitor_spawn, monitor_policy, next_failure_count,
-    require_prepared, retry_delay, should_warn_failure, FirmwareRestorer, RogHotkeyHandle,
-    RogHotkeyStatus, RogHotkeyStatusStore, HEALTHY_SESSION,
+    fallback_enabled, handle_after_monitor_spawn, hotkey_enabled, monitor_policy,
+    next_failure_count, preflight_then_prepare, require_prepared, retry_delay, should_warn_failure,
+    take_initial_or_open, FirmwareRestorer, RogHotkeyHandle, RogHotkeyStatus, RogHotkeyStatusStore,
+    HEALTHY_SESSION,
 };
 use std::os::unix::net::UnixStream;
 use std::sync::{
@@ -39,6 +40,82 @@ fn software_fallback_requires_the_exact_opt_in_value() {
     assert!(!fallback_enabled(Some("true")));
     assert!(!fallback_enabled(Some(" 1")));
     assert!(!fallback_enabled(Some("1 ")));
+}
+
+#[test]
+fn rog_runtime_requires_exact_explicit_opt_in() {
+    assert!(hotkey_enabled(Some("1")));
+    assert!(!hotkey_enabled(None));
+    assert!(!hotkey_enabled(Some("true")));
+    assert!(!hotkey_enabled(Some("0")));
+}
+
+#[test]
+fn input_preflight_runs_before_firmware_prepare_and_hands_device_off() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let open_calls = calls.clone();
+    let prepare_calls = calls.clone();
+
+    let (device, guard) = preflight_then_prepare(
+        move || {
+            open_calls.lock().unwrap().push("open");
+            Ok::<_, anyhow::Error>("already-open-device")
+        },
+        move || {
+            prepare_calls.lock().unwrap().push("prepare");
+            Ok::<_, anyhow::Error>("firmware-guard")
+        },
+    )
+    .unwrap();
+
+    assert_eq!(*calls.lock().unwrap(), vec!["open", "prepare"]);
+    assert_eq!(device, "already-open-device");
+    assert_eq!(guard, "firmware-guard");
+}
+
+#[test]
+fn input_preflight_failure_never_prepares_firmware() {
+    let prepare_calls = Arc::new(AtomicUsize::new(0));
+    let calls = prepare_calls.clone();
+
+    let result = preflight_then_prepare::<(), (), _, _>(
+        || Err(anyhow!("input unavailable")),
+        move || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        },
+    );
+
+    assert!(result.is_err());
+    assert_eq!(prepare_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn first_monitor_session_consumes_preopened_device_without_reopen() {
+    let mut initial_device = Some("preopened-device");
+    let reopen_calls = Arc::new(AtomicUsize::new(0));
+    let calls = reopen_calls.clone();
+
+    let device = take_initial_or_open(&mut initial_device, move || {
+        calls.fetch_add(1, Ordering::Relaxed);
+        Ok::<_, anyhow::Error>("reopened-device")
+    })
+    .unwrap();
+
+    assert_eq!(device, "preopened-device");
+    assert!(initial_device.is_none());
+    assert_eq!(reopen_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn disabled_runtime_gate_precedes_input_and_hid_access() {
+    let source = include_str!("../src/rog_hotkey.rs");
+    let enabled_gate = source.find("if !hotkey_enabled").unwrap();
+    let input_open = source.rfind("open_input_device(ROG_INPUT_PATH)").unwrap();
+    let hid_probe = source.find("HidMKeyTransport::discover_and_probe").unwrap();
+
+    assert!(enabled_gate < input_open);
+    assert!(enabled_gate < hid_probe);
 }
 
 #[test]
