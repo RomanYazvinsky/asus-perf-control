@@ -4,9 +4,12 @@
 mod rog_input;
 
 use rog_input::{
-    monitor_once, receiver_disconnected, try_emit_press, RawInputEvent, RogEventMatcher, EV_KEY,
-    EV_MSC, EV_SYN, KEY_PROG1, KEY_UNKNOWN, MSC_SCAN, ROG_INPUT_PATH, ROG_SCAN, SYN_REPORT,
+    monitor_once, receiver_disconnected, try_emit_press, wait_for_input_or_cancel, RawInputEvent,
+    RogEventMatcher, WaitOutcome, EV_KEY, EV_MSC, EV_SYN, KEY_PROG1, KEY_UNKNOWN, MSC_SCAN,
+    ROG_INPUT_PATH, ROG_SCAN, SYN_REPORT,
 };
+use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -146,8 +149,22 @@ fn monitor_is_nonblocking_and_checks_shutdown_frequently() {
     let source = include_str!("../src/rog_input.rs");
 
     assert!(source.contains("set_nonblocking(true)"));
-    assert!(source.contains("Duration::from_millis(50)"));
-    assert!(source.contains("shutdown.load("));
+    assert!(source.contains("wait_for_input_or_cancel"));
+    assert!(!source.contains("Duration::from_millis(50)"));
+}
+
+#[test]
+fn cancellation_fd_wakes_blocking_wait() {
+    use std::io::Write;
+    let (input_read, _input_write) = UnixStream::pair().unwrap();
+    let (cancel_read, mut cancel_write) = UnixStream::pair().unwrap();
+    let waiter = std::thread::spawn(move || {
+        wait_for_input_or_cancel(input_read.as_raw_fd(), cancel_read.as_raw_fd()).unwrap()
+    });
+
+    cancel_write.write_all(&[1]).unwrap();
+
+    assert_eq!(waiter.join().unwrap(), WaitOutcome::Cancelled);
 }
 
 #[test]
@@ -182,6 +199,7 @@ fn monitor_once_accepts_interruptible_bounded_contract(
     sender: Sender<()>,
     shutdown: Arc<AtomicBool>,
     dropped: Arc<AtomicU64>,
+    cancel: &UnixStream,
 ) {
-    let _ = monitor_once(path, sender, shutdown, dropped, || {});
+    let _ = monitor_once(path, sender, shutdown, dropped, cancel, || {});
 }

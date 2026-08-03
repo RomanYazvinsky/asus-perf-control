@@ -3,17 +3,20 @@ use crate::rog_input::{monitor_once, receiver_disconnected, KEY_PROG1, ROG_INPUT
 use anyhow::{anyhow, Result};
 use log::{debug, error, warn};
 use serde::Serialize;
+use std::io::Write;
+use std::os::unix::net::UnixStream;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 const FALLBACK_ENV: &str = "ASUS_ROG_HOTKEY_SOFTWARE_FALLBACK";
 const RESTORE_ATTEMPTS: usize = 3;
 const RESTORE_RETRY_DELAY: Duration = Duration::from_millis(100);
+pub const HEALTHY_SESSION: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,6 +131,11 @@ impl RogHotkeyStatusStore {
         self.lock().restoration_state = state.to_string();
     }
 
+    pub fn replace(&self, status: RogHotkeyStatus) {
+        *self.lock() = status;
+        self.dropped_presses.store(0, Ordering::Relaxed);
+    }
+
     #[doc(hidden)]
     pub fn dropped_counter(&self) -> Arc<AtomicU64> {
         self.dropped_presses.clone()
@@ -151,7 +159,7 @@ pub fn monitor_policy(hardware_supported: bool, fallback_requested: bool) -> Mon
     }
 }
 
-pub fn require_prepared<T>(result: Result<T>, _fallback_requested: bool) -> Result<T> {
+pub fn require_prepared<T>(result: Result<T>) -> Result<T> {
     result.map_err(|error| {
         anyhow!(
             "failed to prepare ROG firmware binding; firmware state may be uncertain and daemon refuses to continue: {error:#}"
@@ -165,6 +173,14 @@ pub const fn retry_delay() -> Duration {
 
 pub const fn should_warn_failure(consecutive_failures: u64) -> bool {
     consecutive_failures.is_power_of_two()
+}
+
+pub fn next_failure_count(current: u64, opened_for: Option<Duration>) -> u64 {
+    if opened_for.is_some_and(|duration| duration >= HEALTHY_SESSION) {
+        1
+    } else {
+        current.saturating_add(1)
+    }
 }
 
 pub trait FirmwareRestorer: Send {
@@ -181,7 +197,9 @@ pub struct RogHotkeyHandle {
     restorer: Option<Box<dyn FirmwareRestorer>>,
     shutdown: Arc<AtomicBool>,
     monitor_thread: Option<JoinHandle<()>>,
+    cancellation: Option<UnixStream>,
     status: RogHotkeyStatusStore,
+    cleanup_attempted: bool,
 }
 
 impl RogHotkeyHandle {
@@ -197,13 +215,24 @@ impl RogHotkeyHandle {
             restorer,
             shutdown,
             monitor_thread,
+            cancellation: None,
             status,
+            cleanup_attempted: false,
         }
     }
 
     fn finish(&mut self, restore_attempts: usize) -> Result<()> {
+        if self.cleanup_attempted {
+            return Ok(());
+        }
         self.shutdown.store(true, Ordering::Release);
         let mut failures = Vec::new();
+
+        if let Some(cancellation) = self.cancellation.as_mut() {
+            if let Err(error) = cancellation.write_all(&[1]) {
+                failures.push(format!("failed to wake ROG input monitor: {error}"));
+            }
+        }
 
         if let Some(monitor_thread) = self.monitor_thread.take() {
             if monitor_thread.join().is_err() {
@@ -241,8 +270,10 @@ impl RogHotkeyHandle {
         }
 
         if failures.is_empty() {
+            self.cleanup_attempted = true;
             Ok(())
         } else {
+            self.cleanup_attempted = true;
             Err(anyhow!(failures.join("; ")))
         }
     }
@@ -254,8 +285,10 @@ impl RogHotkeyHandle {
 
 impl Drop for RogHotkeyHandle {
     fn drop(&mut self) {
-        if let Err(error) = self.finish(1) {
-            error!("best-effort ROG hotkey cleanup failed: {error:#}");
+        if !self.cleanup_attempted {
+            if let Err(error) = self.finish(1) {
+                error!("best-effort ROG hotkey cleanup failed: {error:#}");
+            }
         }
     }
 }
@@ -271,11 +304,26 @@ pub fn handle_after_monitor_spawn(
             restorer,
             shutdown,
             monitor_thread: Some(monitor_thread),
+            cancellation: None,
             status,
+            cleanup_attempted: false,
         }),
         Err(error) => {
-            shutdown.store(true, Ordering::Release);
-            Err(anyhow!("failed to spawn ROG input monitor: {error}"))
+            let startup_error = anyhow!("failed to spawn ROG input monitor: {error}");
+            let mut handle = RogHotkeyHandle {
+                restorer,
+                shutdown,
+                monitor_thread: None,
+                cancellation: None,
+                status,
+                cleanup_attempted: false,
+            };
+            match handle.finish(RESTORE_ATTEMPTS) {
+                Ok(()) => Err(startup_error),
+                Err(cleanup_error) => Err(anyhow!(
+                    "{startup_error:#}; startup cleanup also failed: {cleanup_error:#}"
+                )),
+            }
         }
     }
 }
@@ -294,6 +342,7 @@ fn wait_for_shutdown(shutdown: &AtomicBool, duration: Duration) -> bool {
 fn run_monitor_supervisor(
     shutdown: Arc<AtomicBool>,
     sender: Sender<()>,
+    cancellation: UnixStream,
     status: RogHotkeyStatusStore,
 ) {
     let mut consecutive_failures = 0_u64;
@@ -301,16 +350,19 @@ fn run_monitor_supervisor(
 
     while !shutdown.load(Ordering::Acquire) {
         status.set_monitor_state("starting");
-        let opened = Arc::new(AtomicBool::new(false));
-        let opened_for_callback = opened.clone();
+        let opened_at = Arc::new(Mutex::new(None));
+        let opened_for_callback = opened_at.clone();
         let status_for_callback = status.clone();
         let result = monitor_once(
             ROG_INPUT_PATH,
             sender.clone(),
             shutdown.clone(),
             dropped.clone(),
+            &cancellation,
             move || {
-                opened_for_callback.store(true, Ordering::Release);
+                *opened_for_callback
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
                 status_for_callback.set_monitor_state("running");
                 status_for_callback.set_last_error(None);
             },
@@ -323,16 +375,17 @@ fn run_monitor_supervisor(
             break;
         }
 
-        if opened.load(Ordering::Acquire) {
-            consecutive_failures = 0;
-        }
         let error = result.unwrap_err();
         if receiver_disconnected(&error) {
             error!("ROG input monitor stopped because the D-Bus consumer is gone: {error:#}");
             status.set_last_error(Some(format!("{error:#}")));
             break;
         }
-        consecutive_failures = consecutive_failures.saturating_add(1);
+        let opened_for = opened_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .map(|opened_at| opened_at.elapsed());
+        consecutive_failures = next_failure_count(consecutive_failures, opened_for);
         if should_warn_failure(consecutive_failures) {
             warn!(
                 "ROG input monitor failure #{consecutive_failures}; retrying in 1 second: {error:#}"
@@ -353,18 +406,16 @@ fn run_monitor_supervisor(
     status.set_monitor_state("stopped");
 }
 
-pub fn start() -> Result<(RogHotkeyHandle, RogHotkeyStatusStore, Receiver<()>)> {
+pub fn start(status_store: RogHotkeyStatusStore) -> Result<(RogHotkeyHandle, Receiver<()>)> {
     let fallback_requested = fallback_enabled(std::env::var(FALLBACK_ENV).ok().as_deref());
     let shutdown = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::channel(1);
+    let (cancellation_read, cancellation_write) = UnixStream::pair()?;
 
     let (restorer, status) = match HidMKeyTransport::discover_and_probe() {
         Ok((transport, layout)) => {
             let identity = transport.identity().to_string();
-            let guard = require_prepared(
-                FirmwareBindingGuard::prepare(transport, &layout),
-                fallback_requested,
-            )?;
+            let guard = require_prepared(FirmwareBindingGuard::prepare(transport, &layout))?;
             let firmware_changed = guard.changed();
             (
                 Some(Box::new(guard) as Box<dyn FirmwareRestorer>),
@@ -384,23 +435,33 @@ pub fn start() -> Result<(RogHotkeyHandle, RogHotkeyStatusStore, Receiver<()>)> 
     };
 
     let policy = monitor_policy(status.hardware_supported, fallback_requested);
-    let status = RogHotkeyStatusStore::new(status);
+    status_store.replace(status);
+    let status = status_store;
     let handle = if policy.start_monitor {
         let thread_shutdown = shutdown.clone();
         let thread_status = status.clone();
         let monitor_thread = thread::Builder::new()
             .name("rog-hotkey-monitor".to_string())
-            .spawn(move || run_monitor_supervisor(thread_shutdown, sender, thread_status));
-        handle_after_monitor_spawn(restorer, shutdown, status.clone(), monitor_thread)?
+            .spawn(move || {
+                run_monitor_supervisor(thread_shutdown, sender, cancellation_read, thread_status)
+            });
+        let mut handle =
+            handle_after_monitor_spawn(restorer, shutdown, status.clone(), monitor_thread)?;
+        handle.cancellation = Some(cancellation_write);
+        handle
     } else {
         drop(sender);
+        drop(cancellation_read);
+        drop(cancellation_write);
         RogHotkeyHandle {
             restorer,
             shutdown,
             monitor_thread: None,
+            cancellation: None,
             status: status.clone(),
+            cleanup_attempted: false,
         }
     };
 
-    Ok((handle, status, receiver))
+    Ok((handle, receiver))
 }

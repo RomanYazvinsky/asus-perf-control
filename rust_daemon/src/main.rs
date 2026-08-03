@@ -580,7 +580,9 @@ async fn main() -> Result<()> {
         Ok(Box::new(SysfsFanHardwareAdapter::discover()?) as Box<dyn FanHardwareAdapter>)
     }));
 
-    let (mut rog_hotkey_handle, rog_hotkey_status, mut rog_press_receiver) = rog_hotkey::start()?;
+    let rog_hotkey_status = rog_hotkey::RogHotkeyStatusStore::new(
+        rog_hotkey::RogHotkeyStatus::unsupported("ROG hotkey runtime is starting"),
+    );
 
     let daemon = AsusControlDaemon {
         fan_engine: Mutex::new(FanEngineController::new_with_driver(Box::new(
@@ -606,6 +608,30 @@ async fn main() -> Result<()> {
 
     info!("ASUS Control Daemon started successfully");
 
+    // Apply saved temperature limit for the active platform profile on startup.
+    if let Err(e) = apply_active_profile_temp_limit(&_conn).await {
+        error!("Failed to apply saved temperature limit on startup: {}", e);
+        // Continue anyway - not critical
+    }
+
+    tokio::spawn(monitor_platform_profile_changes(_conn.clone()));
+
+    // Refresh system power-plan EPP baseline before applying saved CPU boost overlay.
+    if let Err(e) = reapply_active_asusd_platform_profile().await {
+        error!("Failed to refresh CPU boost EPP baseline on startup: {}", e);
+        // Continue anyway - not critical
+    }
+
+    // Apply saved CPU boost mode on startup (if exists).
+    if let Err(e) = cpu_boost::apply_saved_cpu_boost_mode_on_startup() {
+        error!("Failed to apply saved CPU boost mode on startup: {}", e);
+        // Continue anyway - not critical
+    }
+
+    // Mutate ROG firmware only after all potentially blocking startup calls are complete.
+    let (mut rog_hotkey_handle, mut rog_press_receiver) =
+        rog_hotkey::start(rog_hotkey_status.clone())?;
+
     let rog_signal_connection = _conn.clone();
     let rog_signal_status = rog_hotkey_status.clone();
     tokio::spawn(async move {
@@ -628,26 +654,6 @@ async fn main() -> Result<()> {
             }
         }
     });
-
-    // Apply saved temperature limit for the active platform profile on startup.
-    if let Err(e) = apply_active_profile_temp_limit(&_conn).await {
-        error!("Failed to apply saved temperature limit on startup: {}", e);
-        // Continue anyway - not critical
-    }
-
-    tokio::spawn(monitor_platform_profile_changes(_conn.clone()));
-
-    // Refresh system power-plan EPP baseline before applying saved CPU boost overlay.
-    if let Err(e) = reapply_active_asusd_platform_profile().await {
-        error!("Failed to refresh CPU boost EPP baseline on startup: {}", e);
-        // Continue anyway - not critical
-    }
-
-    // Apply saved CPU boost mode on startup (if exists).
-    if let Err(e) = cpu_boost::apply_saved_cpu_boost_mode_on_startup() {
-        error!("Failed to apply saved CPU boost mode on startup: {}", e);
-        // Continue anyway - not critical
-    }
 
     tokio::select! {
         _ = sigint.recv() => info!("SIGINT received; shutting down"),

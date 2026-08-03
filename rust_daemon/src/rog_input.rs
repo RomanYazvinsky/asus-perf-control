@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use std::fmt;
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
-use std::thread;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{error::TrySendError, Sender};
 
@@ -32,6 +33,53 @@ impl std::error::Error for ReceiverDisconnected {}
 
 pub fn receiver_disconnected(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ReceiverDisconnected>().is_some()
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum WaitOutcome {
+    InputReady,
+    Cancelled,
+}
+
+pub fn wait_for_input_or_cancel(input_fd: RawFd, cancel_fd: RawFd) -> Result<WaitOutcome> {
+    let mut descriptors = [
+        nix::libc::pollfd {
+            fd: input_fd,
+            events: nix::libc::POLLIN,
+            revents: 0,
+        },
+        nix::libc::pollfd {
+            fd: cancel_fd,
+            events: nix::libc::POLLIN,
+            revents: 0,
+        },
+    ];
+
+    loop {
+        // SAFETY: descriptors points to two initialized pollfd values for the duration of poll.
+        let result =
+            unsafe { nix::libc::poll(descriptors.as_mut_ptr(), descriptors.len() as _, -1) };
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).context("failed to poll ROG input and cancellation fds");
+        }
+
+        if descriptors[1].revents
+            & (nix::libc::POLLIN | nix::libc::POLLERR | nix::libc::POLLHUP | nix::libc::POLLNVAL)
+            != 0
+        {
+            return Ok(WaitOutcome::Cancelled);
+        }
+        if descriptors[0].revents
+            & (nix::libc::POLLIN | nix::libc::POLLERR | nix::libc::POLLHUP | nix::libc::POLLNVAL)
+            != 0
+        {
+            return Ok(WaitOutcome::InputReady);
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -121,6 +169,7 @@ pub fn monitor_once<F>(
     sender: Sender<()>,
     shutdown: Arc<AtomicBool>,
     dropped: Arc<AtomicU64>,
+    cancel: &UnixStream,
     on_open: F,
 ) -> Result<()>
 where
@@ -139,10 +188,14 @@ where
     let mut matcher = RogEventMatcher::new(Duration::from_millis(300));
 
     while !shutdown.load(Ordering::Acquire) {
+        if wait_for_input_or_cancel(device.as_raw_fd(), cancel.as_raw_fd())?
+            == WaitOutcome::Cancelled
+        {
+            return Ok(());
+        }
         let events = match device.fetch_events() {
             Ok(events) => events,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(50));
                 continue;
             }
             Err(error) => {

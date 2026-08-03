@@ -9,8 +9,9 @@ mod rog_input;
 
 use anyhow::{anyhow, Result};
 use rog_hotkey::{
-    fallback_enabled, handle_after_monitor_spawn, monitor_policy, require_prepared, retry_delay,
-    should_warn_failure, FirmwareRestorer, RogHotkeyHandle, RogHotkeyStatus, RogHotkeyStatusStore,
+    fallback_enabled, handle_after_monitor_spawn, monitor_policy, next_failure_count,
+    require_prepared, retry_delay, should_warn_failure, FirmwareRestorer, RogHotkeyHandle,
+    RogHotkeyStatus, RogHotkeyStatusStore, HEALTHY_SESSION,
 };
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -65,7 +66,7 @@ fn supported_hardware_starts_monitor_without_fallback_mode() {
 
 #[test]
 fn prepare_failure_is_fatal_even_when_fallback_was_requested() {
-    let error = require_prepared::<()>(Err(anyhow!("feature write failed")), true).unwrap_err();
+    let error = require_prepared::<()>(Err(anyhow!("feature write failed"))).unwrap_err();
 
     assert!(error
         .to_string()
@@ -87,6 +88,21 @@ fn warning_schedule_is_limited_to_first_and_power_of_two_failures() {
         decisions,
         vec![true, true, false, true, false, false, false, true, false, false]
     );
+}
+
+#[test]
+fn flapping_open_then_read_errors_keep_advancing_failure_streak() {
+    let mut failures = 0;
+    for _ in 0..5 {
+        failures = next_failure_count(failures, Some(Duration::from_millis(10)));
+    }
+    assert_eq!(failures, 5);
+}
+
+#[test]
+fn genuinely_healthy_session_resets_failure_streak() {
+    assert_eq!(next_failure_count(7, Some(HEALTHY_SESSION)), 1);
+    assert_eq!(next_failure_count(7, None), 8);
 }
 
 struct FakeRestorer {
@@ -208,21 +224,10 @@ fn restoration_failure_retries_three_times_and_propagates() {
 }
 
 #[test]
-fn monitor_spawn_failure_drops_prepared_restorer_for_raii_restore() {
+fn monitor_spawn_failure_retries_restoration_and_combines_errors() {
     let shutdown = Arc::new(AtomicBool::new(false));
-    let restore_count = Arc::new(AtomicUsize::new(0));
-    struct RaiiRestorer(Arc<AtomicUsize>);
-    impl FirmwareRestorer for RaiiRestorer {
-        fn restore(&mut self) -> Result<()> {
-            Ok(())
-        }
-    }
-    impl Drop for RaiiRestorer {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    let restorer: Box<dyn FirmwareRestorer> = Box::new(RaiiRestorer(restore_count.clone()));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let (restorer, attempts) = test_restorer(3, shutdown.clone(), events);
     let status = RogHotkeyStatusStore::new(RogHotkeyStatus::unsupported("test"));
 
     let result = handle_after_monitor_spawn(
@@ -232,8 +237,10 @@ fn monitor_spawn_failure_drops_prepared_restorer_for_raii_restore() {
         Err(std::io::Error::other("spawn failed")),
     );
 
-    assert!(result.is_err());
-    assert_eq!(restore_count.load(Ordering::Relaxed), 1);
+    let error = result.err().unwrap().to_string();
+    assert_eq!(attempts.load(Ordering::Relaxed), 3);
+    assert!(error.contains("spawn failed"));
+    assert!(error.contains("after 3 attempts"));
 }
 
 #[test]
@@ -241,8 +248,19 @@ fn signals_are_registered_before_firmware_runtime_starts() {
     let source = include_str!("../src/main.rs");
     let sigint = source.find("SignalKind::interrupt").unwrap();
     let sigterm = source.find("SignalKind::terminate").unwrap();
-    let startup = source.find("rog_hotkey::start()").unwrap();
+    let dbus_ready = source.find(".build()\n        .await?").unwrap();
+    let startup = source.find("rog_hotkey::start(").unwrap();
 
     assert!(sigint < startup);
     assert!(sigterm < startup);
+    assert!(dbus_ready < startup);
+}
+
+#[test]
+fn fallible_monitor_resources_are_created_before_firmware_prepare() {
+    let source = include_str!("../src/rog_hotkey.rs");
+    let cancellation_pair = source.find("UnixStream::pair()?").unwrap();
+    let firmware_prepare = source.find("FirmwareBindingGuard::prepare").unwrap();
+
+    assert!(cancellation_pair < firmware_prepare);
 }
