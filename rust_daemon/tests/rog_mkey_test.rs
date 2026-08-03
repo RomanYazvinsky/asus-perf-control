@@ -4,8 +4,25 @@
 mod hardware;
 
 use hardware::rog_mkey::{
-    parse_layout, probe_request, set_opcode_request, AURA_REPORT_ID, ROG_OPCODE,
+    parse_layout, probe_request, set_opcode_request, FirmwareBindingGuard, MKeyTransport,
+    AURA_REPORT_ID, ROG_OPCODE,
 };
+
+#[derive(Default)]
+struct FakeTransport {
+    writes: Vec<Vec<u8>>,
+}
+
+impl MKeyTransport for FakeTransport {
+    fn report_len(&self) -> usize {
+        65
+    }
+
+    fn send_feature(&mut self, report: &[u8]) -> anyhow::Result<()> {
+        self.writes.push(report.to_vec());
+        Ok(())
+    }
+}
 
 #[test]
 fn parses_five_slot_layout_with_rog_key_in_last_slot() {
@@ -101,4 +118,42 @@ fn production_source_attributes_g_helper_protocol() {
 
     assert!(source.contains("https://github.com/seerge/g-helper/pull/5691"));
     assert!(source.contains("seerge"));
+}
+
+#[test]
+fn firmware_guard_prepares_and_restores_only_the_last_slot() {
+    let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]).unwrap();
+    let mut transport = FakeTransport::default();
+    let guard = FirmwareBindingGuard::prepare(&mut transport, &layout).unwrap();
+
+    assert!(guard.changed());
+    assert_eq!(transport.writes, vec![set_opcode_request(65, 3, 4)]);
+
+    guard.restore(&mut transport).unwrap();
+
+    assert_eq!(
+        transport.writes,
+        vec![set_opcode_request(65, 3, 4), set_opcode_request(65, 3, 14),]
+    );
+}
+
+#[test]
+fn firmware_guard_does_not_write_when_rog_opcode_is_already_bound() {
+    let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 4]).unwrap();
+    let mut transport = FakeTransport::default();
+    let guard = FirmwareBindingGuard::prepare(&mut transport, &layout).unwrap();
+
+    assert!(!guard.changed());
+    guard.restore(&mut transport).unwrap();
+
+    assert!(transport.writes.is_empty());
+}
+
+#[test]
+fn firmware_guard_rejects_layout_without_a_rog_slot_without_writing() {
+    let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 3, 2, 3, 14]).unwrap();
+    let mut transport = FakeTransport::default();
+
+    assert!(FirmwareBindingGuard::prepare(&mut transport, &layout).is_err());
+    assert!(transport.writes.is_empty());
 }
