@@ -1,4 +1,5 @@
-_refresh_hotkey_agent_for_graphical_users() {
+_manage_hotkey_agent_for_graphical_users() {
+  local action="$1"
   local runtime_dir uid user
 
   for runtime_dir in /run/user/[0-9]*; do
@@ -7,9 +8,19 @@ _refresh_hotkey_agent_for_graphical_users() {
     user="$(getent passwd "$uid" | cut -d: -f1)"
     [ -n "$user" ] || continue
 
-    if runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user --quiet is-active graphical-session.target >/dev/null 2>&1; then
-      runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user daemon-reload >/dev/null 2>&1 || true
-      runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user restart asus-control-hotkey-agent.service >/dev/null 2>&1 || true
+    if timeout 5s runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user --quiet is-active graphical-session.target >/dev/null 2>&1; then
+      case "$action" in
+        refresh)
+          timeout 5s runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user daemon-reload >/dev/null 2>&1 || true
+          timeout 5s runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user restart asus-control-hotkey-agent.service >/dev/null 2>&1 || true
+          ;;
+        stop)
+          timeout 5s runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user stop asus-control-hotkey-agent.service >/dev/null 2>&1 || true
+          ;;
+        reload)
+          timeout 5s runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user daemon-reload >/dev/null 2>&1 || true
+          ;;
+      esac
     fi
   done
 
@@ -17,9 +28,17 @@ _refresh_hotkey_agent_for_graphical_users() {
 }
 
 post_install() {
-  _refresh_hotkey_agent_for_graphical_users
+  _manage_hotkey_agent_for_graphical_users refresh
 }
 
 post_upgrade() {
-  _refresh_hotkey_agent_for_graphical_users
+  _manage_hotkey_agent_for_graphical_users refresh
+}
+
+pre_remove() {
+  _manage_hotkey_agent_for_graphical_users stop
+}
+
+post_remove() {
+  _manage_hotkey_agent_for_graphical_users reload
 }

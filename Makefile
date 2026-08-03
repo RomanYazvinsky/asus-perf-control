@@ -56,7 +56,7 @@ package-arch: check-makepkg source-tarball
 	@rm -rf "$(ARCHBUILD_DIR)"
 	@mkdir -p "$(ARCHBUILD_DIR)"
 	@cp "$(SOURCE_TARBALL)" "$(ARCHBUILD_DIR)/"
-	@cp packaging/arch/PKGBUILD packaging/arch/asus-linux-control-daemon.install "$(ARCHBUILD_DIR)/"
+	@cp packaging/arch/PKGBUILD packaging/arch/asus-linux-control-daemon.install packaging/arch/asus-linux-control-gui.install "$(ARCHBUILD_DIR)/"
 	@cd "$(ARCHBUILD_DIR)" && makepkg -f
 	@echo "✓ pacman packages:"
 	@find "$(ARCHBUILD_DIR)" -maxdepth 1 -type f \( -name '*.pkg.tar.*' -o -name '*.src.tar.*' \)

@@ -180,6 +180,23 @@ void main() {
         installer,
         contains('Build the release binaries as your regular user'),
       );
+      expect(installer, contains('local BUILD_HOME BUILD_PATH CARGO_BIN'));
+      expect(
+        installer,
+        matches(
+          RegExp(
+            r'if \[ -z "\$\{SUDO_USER:-\}" \] \|\| \[ "\$SUDO_USER" = "root" \]; then\s+'
+            r'print_prebuild_help\s+return 1\s+fi',
+            multiLine: true,
+          ),
+        ),
+      );
+      expect(
+        installer,
+        isNot(
+          matches(RegExp(r'^\s*cargo build --release --bins', multiLine: true)),
+        ),
+      );
     });
 
     test('installer atomically replaces binaries with explicit modes', () {
@@ -267,6 +284,7 @@ void main() {
       expect(hookFile.existsSync(), isTrue);
       final hook = hookFile.readAsStringSync();
       expect(hook, contains('runuser -u'));
+      expect(hook, contains('timeout 5s runuser -u'));
       expect(hook, contains('XDG_RUNTIME_DIR='));
       expect(hook, contains('graphical-session.target'));
       expect(hook, contains('systemctl --user daemon-reload'));
@@ -280,6 +298,34 @@ void main() {
         isNot(matches(RegExp(r'^\s*systemctl --user', multiLine: true))),
       );
       expect(hook, isNot(contains('gtk-launch')));
+    });
+
+    test('Arch package staging includes the GUI install hook', () {
+      final makefile = File('Makefile').readAsStringSync();
+
+      expect(
+        makefile,
+        contains('packaging/arch/asus-linux-control-gui.install'),
+      );
+    });
+
+    test('Arch GUI hook stops before removal and reloads after removal', () {
+      final hook = File(
+        'packaging/arch/asus-linux-control-gui.install',
+      ).readAsStringSync();
+
+      expect(hook, contains('pre_remove()'));
+      expect(hook, contains('post_remove()'));
+      expect(
+        hook,
+        contains('systemctl --user stop asus-control-hotkey-agent.service'),
+      );
+      expect(hook, contains('systemctl --user daemon-reload'));
+      expect(hook, contains('|| true'));
+      expect(
+        hook,
+        isNot(matches(RegExp(r'^\s*systemctl --user', multiLine: true))),
+      );
     });
   });
 }

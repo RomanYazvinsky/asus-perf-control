@@ -61,41 +61,36 @@ print_prebuild_help() {
 }
 
 build_release_bins() {
-    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
-        if ! command -v runuser > /dev/null 2>&1; then
-            print_prebuild_help
-            return 1
-        fi
+    local BUILD_HOME BUILD_PATH CARGO_BIN
 
-        BUILD_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
-        if [ -z "$BUILD_HOME" ] || [ ! -d "$BUILD_HOME" ]; then
-            print_prebuild_help
-            return 1
-        fi
-
-        BUILD_PATH="$BUILD_HOME/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        CARGO_BIN="$(runuser -u "$SUDO_USER" -- env \
-            HOME="$BUILD_HOME" USER="$SUDO_USER" LOGNAME="$SUDO_USER" PATH="$BUILD_PATH" \
-            sh -c 'command -v cargo' 2>/dev/null || true)"
-        if [ -z "$CARGO_BIN" ] || [ ! -x "$CARGO_BIN" ]; then
-            print_prebuild_help
-            return 1
-        fi
-
-        runuser -u "$SUDO_USER" -- env \
-            HOME="$BUILD_HOME" USER="$SUDO_USER" LOGNAME="$SUDO_USER" PATH="$BUILD_PATH" \
-            "$CARGO_BIN" build --release --bins --manifest-path "$DAEMON_SOURCE/Cargo.toml"
-        return
-    fi
-
-    if ! command -v cargo > /dev/null 2>&1; then
-        echo -e "${RED}Error: Rust toolchain not found.${NC}"
-        echo "Build the release binaries before running the installer:"
-        echo "  cd '$DAEMON_SOURCE' && cargo build --release --bins"
+    if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = "root" ]; then
+        print_prebuild_help
         return 1
     fi
 
-    cargo build --release --bins --manifest-path "$DAEMON_SOURCE/Cargo.toml"
+    if ! command -v runuser > /dev/null 2>&1; then
+        print_prebuild_help
+        return 1
+    fi
+
+    BUILD_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    if [ -z "$BUILD_HOME" ] || [ ! -d "$BUILD_HOME" ]; then
+        print_prebuild_help
+        return 1
+    fi
+
+    BUILD_PATH="$BUILD_HOME/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    CARGO_BIN="$(runuser -u "$SUDO_USER" -- env \
+        HOME="$BUILD_HOME" USER="$SUDO_USER" LOGNAME="$SUDO_USER" PATH="$BUILD_PATH" \
+        sh -c 'command -v cargo' 2>/dev/null || true)"
+    if [ -z "$CARGO_BIN" ] || [ ! -x "$CARGO_BIN" ]; then
+        print_prebuild_help
+        return 1
+    fi
+
+    runuser -u "$SUDO_USER" -- env \
+        HOME="$BUILD_HOME" USER="$SUDO_USER" LOGNAME="$SUDO_USER" PATH="$BUILD_PATH" \
+        "$CARGO_BIN" build --release --bins --manifest-path "$DAEMON_SOURCE/Cargo.toml"
 }
 
 install_binary_atomically() {
