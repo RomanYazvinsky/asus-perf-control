@@ -195,6 +195,15 @@ cd rust_daemon && cargo test
 
 Run these before packaging or installing a new build.
 
+### ROG/M4 hotkey verification
+
+Hardware verification for launch, same-process window raising, debounce,
+unrelated M-key behavior, firmware restoration, and unsupported-device fallback
+is documented in [ROG/M4 hotkey manual verification](docs/research/rog-m4-hotkey-manual-verification.md).
+
+The ASUS M-key firmware report sequence is adapted from G-Helper by seerge:
+https://github.com/seerge/g-helper/pull/5691
+
 ## Hardware Control
 
 ### Performance Mode
