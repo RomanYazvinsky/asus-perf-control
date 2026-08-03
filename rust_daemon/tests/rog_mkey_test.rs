@@ -3,24 +3,66 @@
 #[path = "../src/hardware/mod.rs"]
 mod hardware;
 
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+
 use hardware::rog_mkey::{
-    parse_layout, probe_request, set_opcode_request, FirmwareBindingGuard, MKeyTransport,
-    AURA_REPORT_ID, ROG_OPCODE,
+    parse_layout, probe_request, select_capable_candidate, set_opcode_request,
+    FirmwareBindingGuard, MKeyTransport, ProbedCandidate, AURA_REPORT_ID, FEATURE_REPORT_LEN,
+    ROG_OPCODE,
 };
 
 #[derive(Default)]
-struct FakeTransport {
+struct FakeState {
     writes: Vec<Vec<u8>>,
+    failures: VecDeque<&'static str>,
+}
+
+#[derive(Clone)]
+struct FakeTransport {
+    report_len: usize,
+    state: Rc<RefCell<FakeState>>,
+}
+
+impl Default for FakeTransport {
+    fn default() -> Self {
+        Self {
+            report_len: FEATURE_REPORT_LEN,
+            state: Rc::new(RefCell::new(FakeState::default())),
+        }
+    }
+}
+
+impl FakeTransport {
+    fn with_failures(failures: impl IntoIterator<Item = &'static str>) -> Self {
+        let transport = Self::default();
+        transport.state.borrow_mut().failures.extend(failures);
+        transport
+    }
+
+    fn with_report_len(report_len: usize) -> Self {
+        Self {
+            report_len,
+            ..Self::default()
+        }
+    }
+
+    fn writes(&self) -> Vec<Vec<u8>> {
+        self.state.borrow().writes.clone()
+    }
 }
 
 impl MKeyTransport for FakeTransport {
     fn report_len(&self) -> usize {
-        65
+        self.report_len
     }
 
     fn send_feature(&mut self, report: &[u8]) -> anyhow::Result<()> {
-        self.writes.push(report.to_vec());
-        Ok(())
+        let mut state = self.state.borrow_mut();
+        state.writes.push(report.to_vec());
+        match state.failures.pop_front() {
+            Some(message) => Err(anyhow::anyhow!(message)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -123,37 +165,157 @@ fn production_source_attributes_g_helper_protocol() {
 #[test]
 fn firmware_guard_prepares_and_restores_only_the_last_slot() {
     let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]).unwrap();
-    let mut transport = FakeTransport::default();
-    let guard = FirmwareBindingGuard::prepare(&mut transport, &layout).unwrap();
+    let transport = FakeTransport::default();
+    let mut guard = FirmwareBindingGuard::prepare(transport, &layout).unwrap();
 
     assert!(guard.changed());
-    assert_eq!(transport.writes, vec![set_opcode_request(65, 3, 4)]);
+    assert_eq!(
+        guard.transport().writes(),
+        vec![set_opcode_request(FEATURE_REPORT_LEN, 3, 4)]
+    );
 
-    guard.restore(&mut transport).unwrap();
+    guard.restore().unwrap();
 
     assert_eq!(
-        transport.writes,
-        vec![set_opcode_request(65, 3, 4), set_opcode_request(65, 3, 14),]
+        guard.transport().writes(),
+        vec![
+            set_opcode_request(FEATURE_REPORT_LEN, 3, 4),
+            set_opcode_request(FEATURE_REPORT_LEN, 3, 14),
+        ]
     );
+    assert!(!guard.changed());
 }
 
 #[test]
 fn firmware_guard_does_not_write_when_rog_opcode_is_already_bound() {
     let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 4]).unwrap();
-    let mut transport = FakeTransport::default();
-    let guard = FirmwareBindingGuard::prepare(&mut transport, &layout).unwrap();
+    let transport = FakeTransport::default();
+    let mut guard = FirmwareBindingGuard::prepare(transport, &layout).unwrap();
 
     assert!(!guard.changed());
-    guard.restore(&mut transport).unwrap();
+    guard.restore().unwrap();
 
-    assert!(transport.writes.is_empty());
+    assert!(guard.transport().writes().is_empty());
 }
 
 #[test]
 fn firmware_guard_rejects_layout_without_a_rog_slot_without_writing() {
     let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 3, 2, 3, 14]).unwrap();
-    let mut transport = FakeTransport::default();
+    let transport = FakeTransport::default();
+    let observer = transport.clone();
 
-    assert!(FirmwareBindingGuard::prepare(&mut transport, &layout).is_err());
-    assert!(transport.writes.is_empty());
+    assert!(FirmwareBindingGuard::prepare(transport, &layout).is_err());
+    assert!(observer.writes().is_empty());
+}
+
+#[test]
+fn repeated_restore_is_a_no_op() {
+    let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]).unwrap();
+    let mut guard = FirmwareBindingGuard::prepare(FakeTransport::default(), &layout).unwrap();
+
+    guard.restore().unwrap();
+    guard.restore().unwrap();
+
+    assert_eq!(guard.transport().writes().len(), 2);
+}
+
+#[test]
+fn drop_restores_an_active_binding_on_the_owned_transport() {
+    let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]).unwrap();
+    let transport = FakeTransport::default();
+    let observer = transport.clone();
+
+    {
+        let guard = FirmwareBindingGuard::prepare(transport, &layout).unwrap();
+        assert!(guard.changed());
+    }
+
+    assert_eq!(
+        observer.writes(),
+        vec![
+            set_opcode_request(FEATURE_REPORT_LEN, 3, ROG_OPCODE),
+            set_opcode_request(FEATURE_REPORT_LEN, 3, 14),
+        ]
+    );
+}
+
+#[test]
+fn failed_prepare_write_immediately_restores_the_original_opcode() {
+    let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]).unwrap();
+    let transport = FakeTransport::with_failures(["prepare write failed"]);
+    let observer = transport.clone();
+
+    let error = FirmwareBindingGuard::prepare(transport, &layout)
+        .err()
+        .expect("prepare must fail");
+
+    assert!(error.to_string().contains("prepare write failed"));
+    assert_eq!(
+        observer.writes(),
+        vec![
+            set_opcode_request(FEATURE_REPORT_LEN, 3, ROG_OPCODE),
+            set_opcode_request(FEATURE_REPORT_LEN, 3, 14),
+        ]
+    );
+}
+
+#[test]
+fn failed_prepare_and_restore_report_both_errors() {
+    let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]).unwrap();
+    let transport = FakeTransport::with_failures(["prepare write failed", "restore write failed"]);
+
+    let error = FirmwareBindingGuard::prepare(transport, &layout)
+        .err()
+        .expect("prepare must fail")
+        .to_string();
+
+    assert!(error.contains("prepare write failed"));
+    assert!(error.contains("restore write failed"));
+}
+
+#[test]
+fn invalid_transport_report_length_is_rejected_without_writing() {
+    let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]).unwrap();
+    let transport = FakeTransport::with_report_len(64);
+    let observer = transport.clone();
+
+    let error = FirmwareBindingGuard::prepare(transport, &layout)
+        .err()
+        .expect("invalid report length must fail");
+
+    assert!(error.to_string().contains("65"));
+    assert!(observer.writes().is_empty());
+}
+
+fn probed_candidate(identity: &str, response: &[u8]) -> ProbedCandidate<()> {
+    ProbedCandidate {
+        identity: identity.to_string(),
+        transport: (),
+        layout: parse_layout(response).unwrap(),
+    }
+}
+
+#[test]
+fn capable_selection_ignores_layouts_without_a_rog_slot() {
+    let incapable = probed_candidate("three-slot", &[0x5d, 0x9f, 0x02, 0, 3, 2, 3, 14]);
+    let capable = probed_candidate("four-slot", &[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]);
+
+    let selected = select_capable_candidate(vec![incapable, capable]).unwrap();
+
+    assert_eq!(selected.identity, "four-slot");
+}
+
+#[test]
+fn capable_selection_rejects_ambiguous_devices() {
+    let first = probed_candidate("/dev/hidraw1", &[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]);
+    let second = probed_candidate("/dev/hidraw2", &[0x5d, 0x9f, 0x02, 0, 5, 2, 3, 1, 14, 4]);
+
+    let error = select_capable_candidate(vec![first, second])
+        .err()
+        .expect("ambiguous candidates must fail")
+        .to_string();
+
+    assert!(error.contains("ambiguous"));
+    assert!(error.contains("/dev/hidraw1"));
+    assert!(error.contains("/dev/hidraw2"));
 }

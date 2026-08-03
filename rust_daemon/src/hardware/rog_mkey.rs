@@ -7,6 +7,8 @@ pub const ROG_OPCODE: u8 = 4;
 pub const FEATURE_REPORT_LEN: usize = 65;
 
 const ASUS_VENDOR_ID: u16 = 0x0b05;
+const ASUS_MKEY_USAGE_PAGE: u16 = 0xff31;
+const ASUS_MKEY_USAGE: u16 = 0x79;
 const PROBE_ATTEMPTS: usize = 10;
 const PROBE_DELAY: Duration = Duration::from_millis(20);
 
@@ -34,68 +36,139 @@ pub trait MKeyTransport {
     fn send_feature(&mut self, report: &[u8]) -> Result<()>;
 }
 
-pub struct FirmwareBindingGuard {
+pub struct FirmwareBindingGuard<T: MKeyTransport> {
+    transport: T,
     slot: usize,
     original_opcode: u8,
-    changed: bool,
+    active: bool,
 }
 
-impl FirmwareBindingGuard {
-    pub fn prepare<T: MKeyTransport>(transport: &mut T, layout: &MKeyLayout) -> Result<Self> {
+impl<T: MKeyTransport> FirmwareBindingGuard<T> {
+    pub fn prepare(transport: T, layout: &MKeyLayout) -> Result<Self> {
+        ensure!(
+            transport.report_len() == FEATURE_REPORT_LEN,
+            "invalid M-key feature report length: expected {FEATURE_REPORT_LEN}, got {}",
+            transport.report_len()
+        );
         let slot = layout
             .rog_slot()
             .ok_or_else(|| anyhow!("ROG slot unavailable"))?;
         let original_opcode = layout
             .rog_opcode()
             .ok_or_else(|| anyhow!("ROG opcode unavailable"))?;
-        let changed = original_opcode != ROG_OPCODE;
-
-        if changed {
-            transport.send_feature(&set_opcode_request(
-                transport.report_len(),
-                slot,
-                ROG_OPCODE,
-            ))?;
-        }
-
-        Ok(Self {
+        let active = original_opcode != ROG_OPCODE;
+        let mut guard = Self {
+            transport,
             slot,
             original_opcode,
-            changed,
-        })
+            active,
+        };
+
+        if guard.active {
+            let request = set_opcode_request(FEATURE_REPORT_LEN, slot, ROG_OPCODE);
+            if let Err(prepare_error) = guard.transport.send_feature(&request) {
+                return match guard.restore() {
+                    Ok(()) => Err(anyhow!(
+                        "failed to prepare ROG firmware binding: {prepare_error:#}; original opcode restored"
+                    )),
+                    Err(restore_error) => Err(anyhow!(
+                        "failed to prepare ROG firmware binding: {prepare_error:#}; failed to restore original opcode: {restore_error:#}"
+                    )),
+                };
+            }
+        }
+
+        Ok(guard)
     }
 
     pub fn changed(&self) -> bool {
-        self.changed
+        self.active
     }
 
-    pub fn restore<T: MKeyTransport>(&self, transport: &mut T) -> Result<()> {
-        if self.changed {
-            transport.send_feature(&set_opcode_request(
-                transport.report_len(),
+    pub fn restore(&mut self) -> Result<()> {
+        if self.active {
+            self.transport.send_feature(&set_opcode_request(
+                FEATURE_REPORT_LEN,
                 self.slot,
                 self.original_opcode,
             ))?;
+            self.active = false;
         }
         Ok(())
+    }
+
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+}
+
+impl<T: MKeyTransport> Drop for FirmwareBindingGuard<T> {
+    fn drop(&mut self) {
+        if self.active {
+            if let Err(error) = self.restore() {
+                log::error!("failed to restore original ROG firmware binding on drop: {error:#}");
+            }
+        }
+    }
+}
+
+pub(crate) struct ProbedCandidate<T> {
+    pub(crate) identity: String,
+    pub(crate) transport: T,
+    pub(crate) layout: MKeyLayout,
+}
+
+pub(crate) fn select_capable_candidate<T>(
+    candidates: Vec<ProbedCandidate<T>>,
+) -> Result<ProbedCandidate<T>> {
+    let mut capable = Vec::new();
+    let mut mismatches = Vec::new();
+
+    for candidate in candidates {
+        if candidate.layout.rog_slot().is_some() {
+            capable.push(candidate);
+        } else {
+            mismatches.push(format!("{}: layout has no ROG slot", candidate.identity));
+        }
+    }
+
+    match capable.len() {
+        1 => Ok(capable.remove(0)),
+        0 => Err(anyhow!(
+            "no capable ASUS M-key HID candidate found{}",
+            if mismatches.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", mismatches.join("; "))
+            }
+        )),
+        _ => Err(anyhow!(
+            "ambiguous ASUS M-key HID candidates: {}",
+            capable
+                .iter()
+                .map(|candidate| candidate.identity.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )),
     }
 }
 
 pub struct HidMKeyTransport {
     device: hidapi::HidDevice,
+    identity: String,
 }
 
 impl HidMKeyTransport {
     pub fn discover_and_probe() -> Result<(Self, MKeyLayout)> {
         let api = hidapi::HidApi::new().context("failed to initialize hidapi")?;
         let mut failures = Vec::new();
-        let mut candidate_count = 0;
+        let mut probed = Vec::new();
 
-        for info in api
-            .device_list()
-            .filter(|info| info.vendor_id() == ASUS_VENDOR_ID)
-        {
-            candidate_count += 1;
+        for info in api.device_list().filter(|info| {
+            info.vendor_id() == ASUS_VENDOR_ID
+                && info.usage_page() == ASUS_MKEY_USAGE_PAGE
+                && info.usage() == ASUS_MKEY_USAGE
+        }) {
             let candidate = format!(
                 "ASUS HID {:04x}:{:04x} at {}",
                 info.vendor_id(),
@@ -116,6 +189,7 @@ impl HidMKeyTransport {
             }
 
             let mut last_error = None;
+            let mut layout = None;
             for _ in 0..PROBE_ATTEMPTS {
                 thread::sleep(PROBE_DELAY);
                 let mut response = [0; FEATURE_REPORT_LEN];
@@ -123,27 +197,48 @@ impl HidMKeyTransport {
 
                 match device.get_feature_report(&mut response) {
                     Ok(response_len) => match parse_layout(&response[..response_len]) {
-                        Ok(layout) => return Ok((Self { device }, layout)),
+                        Ok(parsed) => {
+                            layout = Some(parsed);
+                            break;
+                        }
                         Err(error) => last_error = Some(format!("invalid response: {error}")),
                     },
                     Err(error) => last_error = Some(format!("read failed: {error}")),
                 }
             }
 
-            failures.push(format!(
-                "{candidate}: no valid M-key layout after {PROBE_ATTEMPTS} attempts ({})",
-                last_error.unwrap_or_else(|| "no response".to_string())
-            ));
+            match layout {
+                Some(layout) => probed.push(ProbedCandidate {
+                    identity: candidate.clone(),
+                    transport: Self {
+                        device,
+                        identity: candidate,
+                    },
+                    layout,
+                }),
+                None => failures.push(format!(
+                    "{candidate}: no valid M-key layout after {PROBE_ATTEMPTS} attempts ({})",
+                    last_error.unwrap_or_else(|| "no response".to_string())
+                )),
+            }
         }
 
-        if candidate_count == 0 {
-            Err(anyhow!("no ASUS HID devices found"))
-        } else {
-            Err(anyhow!(
-                "no ASUS HID device returned a valid M-key layout: {}",
-                failures.join("; ")
-            ))
-        }
+        let selected = select_capable_candidate(probed).map_err(|selection_error| {
+            if failures.is_empty() {
+                selection_error
+            } else {
+                anyhow!(
+                    "{selection_error:#}; probe failures: {}",
+                    failures.join("; ")
+                )
+            }
+        })?;
+
+        Ok((selected.transport, selected.layout))
+    }
+
+    pub fn identity(&self) -> &str {
+        &self.identity
     }
 }
 
