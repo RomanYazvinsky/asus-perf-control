@@ -4,12 +4,16 @@
 mod rog_input;
 
 use rog_input::{
-    monitor_once, RawInputEvent, RogEventMatcher, EV_KEY, EV_MSC, EV_SYN, KEY_PROG1, KEY_UNKNOWN,
-    MSC_SCAN, ROG_INPUT_PATH, ROG_SCAN, SYN_REPORT,
+    monitor_once, receiver_disconnected, try_emit_press, RawInputEvent, RogEventMatcher, EV_KEY,
+    EV_MSC, EV_SYN, KEY_PROG1, KEY_UNKNOWN, MSC_SCAN, ROG_INPUT_PATH, ROG_SCAN, SYN_REPORT,
 };
 use std::path::Path;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 fn matcher() -> RogEventMatcher {
     RogEventMatcher::new(Duration::from_millis(300))
@@ -137,7 +141,47 @@ fn monitor_never_grabs_the_input_device() {
     assert!(!source.contains(".grab("));
 }
 
+#[test]
+fn monitor_is_nonblocking_and_checks_shutdown_frequently() {
+    let source = include_str!("../src/rog_input.rs");
+
+    assert!(source.contains("set_nonblocking(true)"));
+    assert!(source.contains("Duration::from_millis(50)"));
+    assert!(source.contains("shutdown.load("));
+}
+
+#[test]
+fn full_queue_coalesces_press_and_counts_drop() {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    let dropped = AtomicU64::new(0);
+
+    try_emit_press(&sender, &dropped).unwrap();
+    try_emit_press(&sender, &dropped).unwrap();
+
+    assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    assert_eq!(receiver.try_recv(), Ok(()));
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn disconnected_press_receiver_is_an_error() {
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    let dropped = AtomicU64::new(0);
+    drop(receiver);
+
+    let error = try_emit_press(&sender, &dropped).unwrap_err();
+
+    assert!(error.to_string().contains("receiver is gone"));
+    assert!(receiver_disconnected(&error));
+    assert_eq!(dropped.load(Ordering::Relaxed), 0);
+}
+
 #[allow(dead_code)]
-fn monitor_once_accepts_an_unbounded_sender(path: &Path, sender: UnboundedSender<()>) {
-    let _ = monitor_once(path, sender);
+fn monitor_once_accepts_interruptible_bounded_contract(
+    path: &Path,
+    sender: Sender<()>,
+    shutdown: Arc<AtomicBool>,
+    dropped: Arc<AtomicU64>,
+) {
+    let _ = monitor_once(path, sender, shutdown, dropped, || {});
 }

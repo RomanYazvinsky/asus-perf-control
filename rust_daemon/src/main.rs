@@ -23,7 +23,7 @@ use package_updates::parser::parse_check_output;
 use package_updates::status::{PackageBackend, UpdateErrorCode, UpdateState, UpdateStatus};
 
 use anyhow::Result;
-use log::{error, info};
+use log::{debug, error, info};
 use std::sync::Mutex;
 use tokio::process::Command;
 use tokio::time::{sleep, Duration};
@@ -41,7 +41,7 @@ const PROFILE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 struct AsusControlDaemon {
     fan_engine: Mutex<FanEngineController>,
     package_update_jobs: UpdateJobManager,
-    rog_hotkey_status_json: String,
+    rog_hotkey_status: rog_hotkey::RogHotkeyStatusStore,
 }
 
 async fn authorize_fan_engine_write(
@@ -238,8 +238,10 @@ async fn monitor_platform_profile_changes(conn: zbus::Connection) {
 #[interface(name = "com.asuslinuxcontrol.Daemon")]
 impl AsusControlDaemon {
     /// Read ROG hotkey runtime diagnostics.
-    async fn get_rog_hotkey_status(&self) -> String {
-        self.rog_hotkey_status_json.clone()
+    async fn get_rog_hotkey_status(&self) -> Result<String, zbus::fdo::Error> {
+        self.rog_hotkey_status
+            .to_json()
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 
     #[zbus(signal)]
@@ -570,19 +572,22 @@ async fn main() -> Result<()> {
     info!("Bus name: {}", BUS_NAME);
     info!("Object path: {}", OBJECT_PATH);
 
+    // Register before any ROG firmware mutation so startup signals remain queued for cleanup.
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
     let fan_engine_driver = ThreadedFanEngineDriver::new(Box::new(|| {
         Ok(Box::new(SysfsFanHardwareAdapter::discover()?) as Box<dyn FanHardwareAdapter>)
     }));
 
     let (mut rog_hotkey_handle, rog_hotkey_status, mut rog_press_receiver) = rog_hotkey::start()?;
-    let rog_hotkey_status_json = rog_hotkey_status.to_json()?;
 
     let daemon = AsusControlDaemon {
         fan_engine: Mutex::new(FanEngineController::new_with_driver(Box::new(
             fan_engine_driver,
         ))),
         package_update_jobs: UpdateJobManager::new(),
-        rog_hotkey_status_json,
+        rog_hotkey_status: rog_hotkey_status.clone(),
     };
 
     if let Err(e) = restore_saved_fan_engine_on_startup(&daemon) {
@@ -602,19 +607,24 @@ async fn main() -> Result<()> {
     info!("ASUS Control Daemon started successfully");
 
     let rog_signal_connection = _conn.clone();
+    let rog_signal_status = rog_hotkey_status.clone();
     tokio::spawn(async move {
         let signal_context = match zbus::SignalContext::new(&rog_signal_connection, OBJECT_PATH) {
             Ok(context) => context,
             Err(error) => {
                 error!("Failed to create ROG hotkey signal context: {error}");
+                rog_signal_status.set_signal_error(Some(error.to_string()));
                 return;
             }
         };
 
         while rog_press_receiver.recv().await.is_some() {
-            info!("Accepted ROG key press; emitting D-Bus signal");
+            debug!("Accepted ROG key press; emitting D-Bus signal");
             if let Err(error) = AsusControlDaemon::rog_key_pressed(&signal_context).await {
                 error!("Failed to emit RogKeyPressed signal: {error}");
+                rog_signal_status.set_signal_error(Some(error.to_string()));
+            } else {
+                rog_signal_status.set_signal_error(None);
             }
         }
     });
@@ -639,8 +649,6 @@ async fn main() -> Result<()> {
         // Continue anyway - not critical
     }
 
-    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
         _ = sigint.recv() => info!("SIGINT received; shutting down"),
         _ = sigterm.recv() => info!("SIGTERM received; shutting down"),
@@ -648,6 +656,7 @@ async fn main() -> Result<()> {
 
     if let Err(error) = rog_hotkey_handle.shutdown() {
         error!("Failed to restore ROG firmware binding during shutdown: {error:#}");
+        return Err(error);
     }
 
     Ok(())

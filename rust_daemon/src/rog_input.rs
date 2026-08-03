@@ -1,6 +1,13 @@
 use anyhow::{Context, Result};
+use std::fmt;
 use std::path::Path;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
+use std::thread;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc::{error::TrySendError, Sender};
 
 pub const EV_SYN: u16 = 0x00;
 pub const EV_KEY: u16 = 0x01;
@@ -11,6 +18,21 @@ pub const KEY_PROG1: u16 = 148;
 pub const KEY_UNKNOWN: u16 = 240;
 pub const ROG_SCAN: i32 = 0x38;
 pub const ROG_INPUT_PATH: &str = "/dev/input/by-path/platform-asus-nb-wmi-event";
+
+#[derive(Debug)]
+struct ReceiverDisconnected;
+
+impl fmt::Display for ReceiverDisconnected {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("failed to send ROG press: receiver is gone")
+    }
+}
+
+impl std::error::Error for ReceiverDisconnected {}
+
+pub fn receiver_disconnected(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ReceiverDisconnected>().is_some()
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct RawInputEvent {
@@ -80,33 +102,67 @@ impl RogEventMatcher {
     }
 }
 
-/// Opens and monitors one input device instance.
+pub fn try_emit_press(sender: &Sender<()>, dropped: &AtomicU64) -> Result<()> {
+    match sender.try_send(()) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(())) => {
+            dropped.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        Err(TrySendError::Closed(())) => Err(ReceiverDisconnected.into()),
+    }
+}
+
+/// Opens and monitors one input device instance without grabbing it.
 ///
-/// This returns on open, read, or channel failure. The caller or supervisor owns retry/backoff
-/// and process shutdown.
-pub fn monitor_once(
+/// Nonblocking reads keep shutdown latency bounded. The supervisor owns retry/backoff.
+pub fn monitor_once<F>(
     path: impl AsRef<Path>,
-    sender: tokio::sync::mpsc::UnboundedSender<()>,
-) -> Result<()> {
+    sender: Sender<()>,
+    shutdown: Arc<AtomicBool>,
+    dropped: Arc<AtomicU64>,
+    on_open: F,
+) -> Result<()>
+where
+    F: FnOnce(),
+{
     let path = path.as_ref();
     let mut device = evdev::Device::open(path)
         .with_context(|| format!("failed to open ROG input device {}", path.display()))?;
+    device.set_nonblocking(true).with_context(|| {
+        format!(
+            "failed to make ROG input device {} nonblocking",
+            path.display()
+        )
+    })?;
+    on_open();
     let mut matcher = RogEventMatcher::new(Duration::from_millis(300));
 
-    loop {
-        let events = device
-            .fetch_events()
-            .with_context(|| format!("failed to read ROG input device {}", path.display()))?;
+    while !shutdown.load(Ordering::Acquire) {
+        let events = match device.fetch_events() {
+            Ok(events) => events,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to read ROG input device {}", path.display())
+                });
+            }
+        };
 
         for event in events {
             if matcher.accept(event.into(), Instant::now()) {
-                sender.send(()).with_context(|| {
+                try_emit_press(&sender, &dropped).with_context(|| {
                     format!(
-                        "failed to send ROG press from input device {}: receiver is gone",
+                        "failed to send ROG press from input device {}",
                         path.display()
                     )
                 })?;
             }
         }
     }
+
+    Ok(())
 }
