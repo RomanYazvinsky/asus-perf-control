@@ -192,3 +192,13 @@ fn production_runner_uses_async_kill_on_drop_processes() {
     assert!(source.contains("kill_on_drop(true)"));
     assert!(!source.contains("std::process::Command"));
 }
+
+#[test]
+fn production_gate_is_async_timeout_bounded_and_daemon_is_activated_before_subscribe() {
+    let source = include_str!("../src/hotkey_agent.rs");
+    let startup_call = source.find("GetRogHotkeyStatus").unwrap();
+    let subscribe = source.find("receive_signal(ROG_KEY_SIGNAL)").unwrap();
+
+    assert!(source.contains("tokio::time::timeout"));
+    assert!(startup_call < subscribe);
+}

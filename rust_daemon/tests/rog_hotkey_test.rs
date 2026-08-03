@@ -10,9 +10,9 @@ mod rog_input;
 use anyhow::{anyhow, Result};
 use rog_hotkey::{
     fallback_enabled, handle_after_monitor_spawn, hotkey_enabled, monitor_policy,
-    next_failure_count, preflight_then_prepare, require_prepared, retry_delay, should_warn_failure,
-    take_initial_or_open, FirmwareRestorer, RogHotkeyHandle, RogHotkeyStatus, RogHotkeyStatusStore,
-    HEALTHY_SESSION,
+    next_failure_count, require_prepared, resolve_runtime_startup, retry_delay,
+    should_warn_failure, take_initial_or_open, FirmwareRestorer, RogHotkeyHandle, RogHotkeyStatus,
+    RogHotkeyStatusStore, StartupResolution, HEALTHY_SESSION,
 };
 use std::os::unix::net::UnixStream;
 use std::sync::{
@@ -51,43 +51,133 @@ fn rog_runtime_requires_exact_explicit_opt_in() {
 }
 
 #[test]
-fn input_preflight_runs_before_firmware_prepare_and_hands_device_off() {
+fn unsupported_without_fallback_never_opens_input_or_prepares() {
     let calls = Arc::new(Mutex::new(Vec::new()));
+    let discover_calls = calls.clone();
     let open_calls = calls.clone();
     let prepare_calls = calls.clone();
 
-    let (device, guard) = preflight_then_prepare(
+    let resolution = resolve_runtime_startup::<(), _, (), _, _, _>(
+        false,
         move || {
-            open_calls.lock().unwrap().push("open");
-            Ok::<_, anyhow::Error>("already-open-device")
+            discover_calls.lock().unwrap().push("discover");
+            Err(anyhow!("unsupported firmware"))
         },
         move || {
+            open_calls.lock().unwrap().push("open");
+            Ok::<_, anyhow::Error>("device")
+        },
+        move |_| {
             prepare_calls.lock().unwrap().push("prepare");
-            Ok::<_, anyhow::Error>("firmware-guard")
+            Ok(())
         },
     )
     .unwrap();
 
-    assert_eq!(*calls.lock().unwrap(), vec!["open", "prepare"]);
-    assert_eq!(device, "already-open-device");
-    assert_eq!(guard, "firmware-guard");
+    assert!(matches!(resolution, StartupResolution::Unsupported { .. }));
+    assert_eq!(*calls.lock().unwrap(), vec!["discover"]);
 }
 
 #[test]
-fn input_preflight_failure_never_prepares_firmware() {
-    let prepare_calls = Arc::new(AtomicUsize::new(0));
-    let calls = prepare_calls.clone();
+fn supported_input_open_failure_is_nonfatal_and_never_prepares() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let discover_calls = calls.clone();
+    let open_calls = calls.clone();
+    let prepare_calls = calls.clone();
 
-    let result = preflight_then_prepare::<(), (), _, _>(
-        || Err(anyhow!("input unavailable")),
+    let resolution = resolve_runtime_startup(
+        false,
         move || {
-            calls.fetch_add(1, Ordering::Relaxed);
+            discover_calls.lock().unwrap().push("discover");
+            Ok("supported-hardware")
+        },
+        move || {
+            open_calls.lock().unwrap().push("open");
+            Err::<(), _>(anyhow!("input unavailable"))
+        },
+        move |_| {
+            prepare_calls.lock().unwrap().push("prepare");
+            Ok::<_, anyhow::Error>("guard")
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        resolution,
+        StartupResolution::InputUnavailable {
+            hardware: Some("supported-hardware"),
+            ..
+        }
+    ));
+    assert_eq!(*calls.lock().unwrap(), vec!["discover", "open"]);
+}
+
+#[test]
+fn unsupported_with_fallback_opens_input_without_prepare() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let discover_calls = calls.clone();
+    let open_calls = calls.clone();
+    let prepare_calls = calls.clone();
+
+    let resolution = resolve_runtime_startup::<(), _, (), _, _, _>(
+        true,
+        move || {
+            discover_calls.lock().unwrap().push("discover");
+            Err(anyhow!("unsupported firmware"))
+        },
+        move || {
+            open_calls.lock().unwrap().push("open");
+            Ok::<_, anyhow::Error>("fallback-device")
+        },
+        move |_| {
+            prepare_calls.lock().unwrap().push("prepare");
             Ok(())
         },
-    );
+    )
+    .unwrap();
 
-    assert!(result.is_err());
-    assert_eq!(prepare_calls.load(Ordering::Relaxed), 0);
+    assert!(matches!(
+        resolution,
+        StartupResolution::FallbackReady {
+            device: "fallback-device",
+            ..
+        }
+    ));
+    assert_eq!(*calls.lock().unwrap(), vec!["discover", "open"]);
+}
+
+#[test]
+fn supported_startup_orders_discovery_open_then_prepare() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let discover_calls = calls.clone();
+    let open_calls = calls.clone();
+    let prepare_calls = calls.clone();
+
+    let resolution = resolve_runtime_startup(
+        false,
+        move || {
+            discover_calls.lock().unwrap().push("discover");
+            Ok("hardware")
+        },
+        move || {
+            open_calls.lock().unwrap().push("open");
+            Ok::<_, anyhow::Error>("device")
+        },
+        move |_| {
+            prepare_calls.lock().unwrap().push("prepare");
+            Ok::<_, anyhow::Error>("guard")
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        resolution,
+        StartupResolution::SupportedReady {
+            device: "device",
+            prepared: "guard"
+        }
+    ));
+    assert_eq!(*calls.lock().unwrap(), vec!["discover", "open", "prepare"]);
 }
 
 #[test]
@@ -111,11 +201,13 @@ fn first_monitor_session_consumes_preopened_device_without_reopen() {
 fn disabled_runtime_gate_precedes_input_and_hid_access() {
     let source = include_str!("../src/rog_hotkey.rs");
     let enabled_gate = source.find("if !hotkey_enabled").unwrap();
-    let input_open = source.rfind("open_input_device(ROG_INPUT_PATH)").unwrap();
     let hid_probe = source.find("HidMKeyTransport::discover_and_probe").unwrap();
+    let input_open = source.rfind("open_input_device(ROG_INPUT_PATH)").unwrap();
+    let firmware_prepare = source.rfind("FirmwareBindingGuard::prepare").unwrap();
 
-    assert!(enabled_gate < input_open);
     assert!(enabled_gate < hid_probe);
+    assert!(hid_probe < input_open);
+    assert!(input_open < firmware_prepare);
 }
 
 #[test]
@@ -360,6 +452,13 @@ fn signals_are_registered_before_firmware_runtime_starts() {
     assert!(dbus_ready < startup);
     assert!(pending_guard < startup);
     assert!(startup < started_log);
+}
+
+#[test]
+fn accepted_press_is_logged_at_info_before_dbus_emit() {
+    let source = include_str!("../src/main.rs");
+
+    assert!(source.contains("info!(\"Accepted ROG key press; emitting D-Bus signal\")"));
 }
 
 #[test]

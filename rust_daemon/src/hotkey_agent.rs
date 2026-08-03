@@ -8,6 +8,7 @@ const DAEMON_PATH: &str = "/com/asuslinuxcontrol/Daemon";
 const DAEMON_INTERFACE: &str = "com.asuslinuxcontrol.Daemon";
 const ROG_KEY_SIGNAL: &str = "RogKeyPressed";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const LOGIND_GATE_TIMEOUT: Duration = Duration::from_secs(2);
 const LOGIND_DESTINATION: &str = "org.freedesktop.login1";
 const SEAT0_PATH: &str = "/org/freedesktop/login1/seat/seat0";
 const SEAT_INTERFACE: &str = "org.freedesktop.login1.Seat";
@@ -37,32 +38,36 @@ impl LogindSeatGate {
 impl ActivationGate for LogindSeatGate {
     fn allows_activation(&mut self) -> BoxFuture<'_, Result<bool>> {
         Box::pin(async move {
-            let seat = zbus::Proxy::new(
-                &self.connection,
-                LOGIND_DESTINATION,
-                SEAT0_PATH,
-                SEAT_INTERFACE,
-            )
-            .await
-            .context("failed to create logind seat0 proxy")?;
-            let (_, session_path): (String, OwnedObjectPath) = seat
-                .get_property("ActiveSession")
+            tokio::time::timeout(LOGIND_GATE_TIMEOUT, async {
+                let seat = zbus::Proxy::new(
+                    &self.connection,
+                    LOGIND_DESTINATION,
+                    SEAT0_PATH,
+                    SEAT_INTERFACE,
+                )
                 .await
-                .context("failed to read logind seat0 ActiveSession")?;
-            let session = zbus::Proxy::new(
-                &self.connection,
-                LOGIND_DESTINATION,
-                session_path.as_str(),
-                SESSION_INTERFACE,
-            )
-            .await
-            .context("failed to create active logind session proxy")?;
-            let (active_uid, _): (u32, OwnedObjectPath) = session
-                .get_property("User")
+                .context("failed to create logind seat0 proxy")?;
+                let (_, session_path): (String, OwnedObjectPath) = seat
+                    .get_property("ActiveSession")
+                    .await
+                    .context("failed to read logind seat0 ActiveSession")?;
+                let session = zbus::Proxy::new(
+                    &self.connection,
+                    LOGIND_DESTINATION,
+                    session_path.as_str(),
+                    SESSION_INTERFACE,
+                )
                 .await
-                .context("failed to read active logind session User")?;
+                .context("failed to create active logind session proxy")?;
+                let (active_uid, _): (u32, OwnedObjectPath) = session
+                    .get_property("User")
+                    .await
+                    .context("failed to read active logind session User")?;
 
-            Ok(active_uid == self.uid)
+                Ok(active_uid == self.uid)
+            })
+            .await
+            .context("timed out checking logind seat0 owner")?
         })
     }
 }
@@ -146,6 +151,10 @@ pub async fn run() -> Result<()> {
     )
     .await
     .context("failed to create ROG hotkey daemon proxy")?;
+    proxy
+        .call_method("GetRogHotkeyStatus", &())
+        .await
+        .context("failed to activate ROG hotkey daemon through status call")?;
     let signals = proxy
         .receive_signal(ROG_KEY_SIGNAL)
         .await

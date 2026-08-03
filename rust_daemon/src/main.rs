@@ -23,7 +23,7 @@ use package_updates::parser::parse_check_output;
 use package_updates::status::{PackageBackend, UpdateErrorCode, UpdateState, UpdateStatus};
 
 use anyhow::Result;
-use log::{debug, error, info};
+use log::{error, info};
 use std::sync::Mutex;
 use tokio::process::Command;
 use tokio::time::{sleep, Duration};
@@ -665,7 +665,7 @@ async fn main() -> Result<()> {
         };
 
         while rog_press_receiver.recv().await.is_some() {
-            debug!("Accepted ROG key press; emitting D-Bus signal");
+            info!("Accepted ROG key press; emitting D-Bus signal");
             if let Err(error) = AsusControlDaemon::rog_key_pressed(&signal_context).await {
                 error!("Failed to emit RogKeyPressed signal: {error}");
                 rog_signal_status.set_signal_error(Some(error.to_string()));

@@ -147,6 +147,7 @@ impl RogHotkeyStatusStore {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct MonitorPolicy {
     pub start_monitor: bool,
     pub fallback_enabled: bool,
@@ -160,14 +161,67 @@ pub fn hotkey_enabled(value: Option<&str>) -> bool {
     value == Some("1")
 }
 
-pub fn preflight_then_prepare<D, P, Open, Prepare>(open: Open, prepare: Prepare) -> Result<(D, P)>
+pub enum StartupResolution<H, D, P> {
+    Unsupported {
+        reason: String,
+    },
+    FallbackReady {
+        device: D,
+        reason: String,
+    },
+    InputUnavailable {
+        hardware: Option<H>,
+        reason: String,
+        fallback_requested: bool,
+    },
+    SupportedReady {
+        device: D,
+        prepared: P,
+    },
+}
+
+pub fn resolve_runtime_startup<H, D, P, Discover, Open, Prepare>(
+    fallback_requested: bool,
+    discover: Discover,
+    open: Open,
+    prepare: Prepare,
+) -> Result<StartupResolution<H, D, P>>
 where
+    Discover: FnOnce() -> Result<H>,
     Open: FnOnce() -> Result<D>,
-    Prepare: FnOnce() -> Result<P>,
+    Prepare: FnOnce(H) -> Result<P>,
 {
-    let device = open()?;
-    let prepared = prepare()?;
-    Ok((device, prepared))
+    match discover() {
+        Ok(hardware) => match open() {
+            Ok(device) => Ok(StartupResolution::SupportedReady {
+                device,
+                prepared: prepare(hardware)?,
+            }),
+            Err(error) => Ok(StartupResolution::InputUnavailable {
+                hardware: Some(hardware),
+                reason: format!("failed to pre-open ROG input device: {error:#}"),
+                fallback_requested: false,
+            }),
+        },
+        Err(discovery_error) if !fallback_requested => Ok(StartupResolution::Unsupported {
+            reason: format!("failed to discover and probe ROG hardware: {discovery_error:#}"),
+        }),
+        Err(discovery_error) => match open() {
+            Ok(device) => Ok(StartupResolution::FallbackReady {
+                device,
+                reason: format!(
+                    "failed to discover and probe ROG hardware: {discovery_error:#}"
+                ),
+            }),
+            Err(input_error) => Ok(StartupResolution::InputUnavailable {
+                hardware: None,
+                reason: format!(
+                    "failed to discover and probe ROG hardware: {discovery_error:#}; failed to pre-open ROG input device: {input_error:#}"
+                ),
+                fallback_requested: true,
+            }),
+        },
+    }
 }
 
 pub fn take_initial_or_open<D, Open>(initial: &mut Option<D>, open: Open) -> Result<D>
@@ -180,6 +234,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 pub fn monitor_policy(hardware_supported: bool, fallback_requested: bool) -> MonitorPolicy {
     MonitorPolicy {
         start_monitor: hardware_supported || fallback_requested,
@@ -475,38 +530,64 @@ pub fn start(status_store: RogHotkeyStatusStore) -> Result<(RogHotkeyHandle, Rec
     let (sender, receiver) = mpsc::channel(1);
     let (cancellation_read, cancellation_write) = UnixStream::pair()?;
 
-    let (initial_device, (restorer, status)) = preflight_then_prepare(
-        || open_input_device(ROG_INPUT_PATH),
+    let resolution = resolve_runtime_startup(
+        fallback_requested,
         || {
-            Ok(match HidMKeyTransport::discover_and_probe() {
-                Ok((transport, layout)) => {
-                    let identity = transport.identity().to_string();
-                    let guard =
-                        require_prepared(FirmwareBindingGuard::prepare(transport, &layout))?;
-                    let firmware_changed = guard.changed();
-                    (
-                        Some(Box::new(guard) as Box<dyn FirmwareRestorer>),
-                        RogHotkeyStatus::supported(identity, firmware_changed),
-                    )
-                }
-                Err(error) => {
-                    let mut status = RogHotkeyStatus::unsupported(format!(
-                        "failed to discover and probe ROG hardware: {error:#}"
-                    ));
-                    status.fallback_enabled = fallback_requested;
-                    if fallback_requested {
-                        status.monitor_state = "starting".to_string();
-                    }
-                    (None, status)
-                }
+            HidMKeyTransport::discover_and_probe().map(|(transport, layout)| {
+                let identity = transport.identity().to_string();
+                (transport, layout, identity)
             })
+        },
+        || open_input_device(ROG_INPUT_PATH),
+        |(transport, layout, identity)| {
+            let guard = require_prepared(FirmwareBindingGuard::prepare(transport, &layout))?;
+            let firmware_changed = guard.changed();
+            Ok((
+                Box::new(guard) as Box<dyn FirmwareRestorer>,
+                identity,
+                firmware_changed,
+            ))
         },
     )?;
 
-    let policy = monitor_policy(status.hardware_supported, fallback_requested);
+    let (initial_device, restorer, status) = match resolution {
+        StartupResolution::Unsupported { reason } => {
+            (None, None, RogHotkeyStatus::unsupported(reason))
+        }
+        StartupResolution::FallbackReady { device, reason } => {
+            let mut status = RogHotkeyStatus::unsupported(reason);
+            status.fallback_enabled = true;
+            status.monitor_state = "starting".to_string();
+            (Some(device), None, status)
+        }
+        StartupResolution::InputUnavailable {
+            hardware,
+            reason,
+            fallback_requested,
+        } => {
+            let mut status = match hardware {
+                Some((_, _, identity)) => RogHotkeyStatus::supported(identity, false),
+                None => RogHotkeyStatus::unsupported(reason.clone()),
+            };
+            status.fallback_enabled = fallback_requested;
+            status.monitor_state = "disabled".to_string();
+            status.reason = Some(reason);
+            (None, None, status)
+        }
+        StartupResolution::SupportedReady {
+            device,
+            prepared: (guard, identity, firmware_changed),
+        } => (
+            Some(device),
+            Some(guard),
+            RogHotkeyStatus::supported(identity, firmware_changed),
+        ),
+    };
+
+    let start_monitor = initial_device.is_some();
     status_store.replace(status);
     let status = status_store;
-    let handle = if policy.start_monitor {
+    let handle = if start_monitor {
         let thread_shutdown = shutdown.clone();
         let thread_status = status.clone();
         let monitor_thread = thread::Builder::new()
@@ -517,7 +598,7 @@ pub fn start(status_store: RogHotkeyStatusStore) -> Result<(RogHotkeyHandle, Rec
                     sender,
                     cancellation_read,
                     thread_status,
-                    Some(initial_device),
+                    initial_device,
                 )
             });
         let mut handle =
@@ -525,7 +606,6 @@ pub fn start(status_store: RogHotkeyStatusStore) -> Result<(RogHotkeyHandle, Rec
         handle.cancellation = Some(cancellation_write);
         handle
     } else {
-        drop(initial_device);
         drop(sender);
         drop(cancellation_read);
         drop(cancellation_write);

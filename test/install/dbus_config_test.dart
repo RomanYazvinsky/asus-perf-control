@@ -33,6 +33,18 @@ void main() {
     expect(config, contains('receive_member="RogKeyPressed"'));
   });
 
+  test('D-Bus activation delegates daemon startup to systemd', () {
+    final service = File(
+      'install/dbus/com.asuslinuxcontrol.Daemon.service',
+    ).readAsStringSync();
+
+    expect(service, contains('SystemdService=asus-control-daemon.service'));
+    expect(
+      service,
+      contains('Exec=/usr/lib/asus-linux-control/asus-control-daemon'),
+    );
+  });
+
   test('polkit policy requires admin authentication for package updates', () {
     final policy = File(
       'install/dbus/com.asuslinuxcontrol.Daemon.policy',

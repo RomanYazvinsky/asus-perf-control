@@ -25,8 +25,9 @@ system daemon and the per-user hotkey agent.
 4. Press ROG/M4 twice within 300 ms and verify debounce prevents duplicate
    activation.
 
-5. Verify M1, M2, M3, and the physical Strix M4 key retain their prior actions.
-   The ROG hotkey integration must not remap or consume those unrelated keys.
+5. Verify the separate physical M1, M2, M3, and M4 slots retain their prior
+   actions. The target of this integration is the ROG-logo/M4 hotkey event; it
+   must not remap or consume the separate physical M-key slots.
 
 6. Stop the daemon and inspect its log. If startup changed the ROG firmware
    opcode, verify shutdown reports that the original opcode was restored:
