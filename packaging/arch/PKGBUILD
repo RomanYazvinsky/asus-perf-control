@@ -17,6 +17,7 @@ package_asus-linux-control() {
 package_asus-linux-control-gui() {
   pkgdesc='ASUS Linux Control Flutter desktop application'
   depends=('asus-linux-control-daemon')
+  install=asus-linux-control-gui.install
 
   install -Dm755 "$srcdir/$pkgbase-$pkgver/build/linux/x64/release/bundle/asus-linux-control" \
     "$pkgdir/usr/lib/asus-linux-control/gui/asus-linux-control"

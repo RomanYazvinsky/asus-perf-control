@@ -4,6 +4,18 @@
 
 set -e
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+
+TEMP_INSTALLS=()
+cleanup_temp_installs() {
+    local temporary
+    for temporary in "${TEMP_INSTALLS[@]}"; do
+        [ -n "$temporary" ] && rm -f -- "$temporary"
+    done
+}
+trap cleanup_temp_installs EXIT
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -38,9 +50,63 @@ fi
 # Check for pre-built Rust daemon
 echo ""
 echo -e "${YELLOW}Checking for Rust daemon...${NC}"
-DAEMON_SOURCE="../rust_daemon"
+DAEMON_SOURCE="$PROJECT_ROOT/rust_daemon"
 DAEMON_BINARY="$DAEMON_SOURCE/target/release/asus-control-daemon"
 AGENT_BINARY="$DAEMON_SOURCE/target/release/asus-control-hotkey-agent"
+
+print_prebuild_help() {
+    echo -e "${RED}Unable to find a usable Rust toolchain for the regular user.${NC}"
+    echo "Build the release binaries as your regular user, then rerun this installer:"
+    echo "  cd '$DAEMON_SOURCE' && cargo build --release --bins"
+}
+
+build_release_bins() {
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        if ! command -v runuser > /dev/null 2>&1; then
+            print_prebuild_help
+            return 1
+        fi
+
+        BUILD_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+        if [ -z "$BUILD_HOME" ] || [ ! -d "$BUILD_HOME" ]; then
+            print_prebuild_help
+            return 1
+        fi
+
+        BUILD_PATH="$BUILD_HOME/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        CARGO_BIN="$(runuser -u "$SUDO_USER" -- env \
+            HOME="$BUILD_HOME" USER="$SUDO_USER" LOGNAME="$SUDO_USER" PATH="$BUILD_PATH" \
+            sh -c 'command -v cargo' 2>/dev/null || true)"
+        if [ -z "$CARGO_BIN" ] || [ ! -x "$CARGO_BIN" ]; then
+            print_prebuild_help
+            return 1
+        fi
+
+        runuser -u "$SUDO_USER" -- env \
+            HOME="$BUILD_HOME" USER="$SUDO_USER" LOGNAME="$SUDO_USER" PATH="$BUILD_PATH" \
+            "$CARGO_BIN" build --release --bins --manifest-path "$DAEMON_SOURCE/Cargo.toml"
+        return
+    fi
+
+    if ! command -v cargo > /dev/null 2>&1; then
+        echo -e "${RED}Error: Rust toolchain not found.${NC}"
+        echo "Build the release binaries before running the installer:"
+        echo "  cd '$DAEMON_SOURCE' && cargo build --release --bins"
+        return 1
+    fi
+
+    cargo build --release --bins --manifest-path "$DAEMON_SOURCE/Cargo.toml"
+}
+
+install_binary_atomically() {
+    local source="$1"
+    local destination="$2"
+    local temporary
+    temporary="$(mktemp "$DAEMON_DEST/.${destination##*/}.tmp.XXXXXX")"
+    TEMP_INSTALLS+=("$temporary")
+    install -m 0755 "$source" "$temporary"
+    mv -f "$temporary" "$destination"
+}
 
 if [ ! -f "$DAEMON_BINARY" ] || [ ! -f "$AGENT_BINARY" ]; then
     echo -e "${YELLOW}Daemon or hotkey agent not found. Building...${NC}"
@@ -51,19 +117,8 @@ if [ ! -f "$DAEMON_BINARY" ] || [ ! -f "$AGENT_BINARY" ]; then
         exit 1
     fi
 
-    # Check if cargo is installed (only needed if building)
-    if ! command -v cargo &> /dev/null; then
-        echo -e "${RED}Error: Rust toolchain not found${NC}"
-        echo "Please install Rust: https://rustup.rs/"
-        echo ""
-        echo "Or build the daemon manually:"
-        echo "  cd ../rust_daemon && cargo build --release --bins && cd ../install"
-        exit 1
-    fi
-
-    # Build daemon in release mode (WITHOUT sudo)
-    echo "Compiling daemon (this may take a minute)..."
-    (cd "$DAEMON_SOURCE" && cargo build --release --bins) || {
+    echo "Compiling daemon and hotkey agent (this may take a minute)..."
+    build_release_bins || {
         echo -e "${RED}Failed to build Rust daemon and hotkey agent${NC}"
         exit 1
     }
@@ -76,11 +131,11 @@ fi
 # Install D-Bus daemon
 echo ""
 echo -e "${YELLOW}Installing D-Bus daemon...${NC}"
-DBUS_DIR="dbus"
-SYSTEMD_DIR="systemd"
+DBUS_DIR="$SCRIPT_DIR/dbus"
+SYSTEMD_DIR="$SCRIPT_DIR/systemd"
 DAEMON_DEST="/usr/lib/asus-linux-control"
 
-mkdir -p "$DAEMON_DEST"
+install -d -m 0755 "$DAEMON_DEST"
 
 # Stop running daemon before replacing binary (avoids "Text file busy")
 if systemctl is-active --quiet asus-control-daemon 2>/dev/null; then
@@ -93,8 +148,7 @@ elif pkill -0 -f asus-control-daemon 2>/dev/null; then
 fi
 
 if [ -f "$DAEMON_SOURCE/target/release/asus-control-daemon" ]; then
-    cp "$DAEMON_SOURCE/target/release/asus-control-daemon" "$DAEMON_DEST/"
-    chmod 755 "$DAEMON_DEST/asus-control-daemon"
+    install_binary_atomically "$DAEMON_BINARY" "$DAEMON_DEST/asus-control-daemon"
     echo -e "${GREEN}✓ Rust daemon installed to $DAEMON_DEST${NC}"
 else
     echo -e "${RED}Error: Compiled daemon binary not found${NC}"
@@ -102,8 +156,7 @@ else
 fi
 
 if [ -f "$AGENT_BINARY" ]; then
-    cp "$AGENT_BINARY" "$DAEMON_DEST/"
-    chmod 755 "$DAEMON_DEST/asus-control-hotkey-agent"
+    install_binary_atomically "$AGENT_BINARY" "$DAEMON_DEST/asus-control-hotkey-agent"
     echo -e "${GREEN}✓ ROG hotkey session agent installed to $DAEMON_DEST${NC}"
 else
     echo -e "${RED}Error: Compiled hotkey agent binary not found${NC}"
@@ -112,26 +165,26 @@ fi
 
 # Install D-Bus service file
 if [ -f "$DBUS_DIR/com.asuslinuxcontrol.Daemon.service" ]; then
-    cp "$DBUS_DIR/com.asuslinuxcontrol.Daemon.service" /usr/share/dbus-1/system-services/
+    install -m 0644 "$DBUS_DIR/com.asuslinuxcontrol.Daemon.service" /usr/share/dbus-1/system-services/
     echo -e "${GREEN}✓ D-Bus service file installed${NC}"
 fi
 
 # Install D-Bus configuration
 if [ -f "$DBUS_DIR/com.asuslinuxcontrol.Daemon.conf" ]; then
-    cp "$DBUS_DIR/com.asuslinuxcontrol.Daemon.conf" /etc/dbus-1/system.d/
+    install -m 0644 "$DBUS_DIR/com.asuslinuxcontrol.Daemon.conf" /etc/dbus-1/system.d/
     echo -e "${GREEN}✓ D-Bus configuration installed${NC}"
 fi
 
 # Install polkit policy
 if [ -f "$DBUS_DIR/com.asuslinuxcontrol.Daemon.policy" ]; then
-    cp "$DBUS_DIR/com.asuslinuxcontrol.Daemon.policy" /usr/share/polkit-1/actions/
+    install -m 0644 "$DBUS_DIR/com.asuslinuxcontrol.Daemon.policy" /usr/share/polkit-1/actions/
     echo -e "${GREEN}✓ Polkit policy installed${NC}"
 fi
 
 # Install and enable boot-time systemd service. D-Bus activation remains as a fallback,
 # but reboot restore needs the daemon to run before the app is opened.
 if [ -f "$SYSTEMD_DIR/asus-control-daemon.service" ]; then
-    cp "$SYSTEMD_DIR/asus-control-daemon.service" /etc/systemd/system/
+    install -m 0644 "$SYSTEMD_DIR/asus-control-daemon.service" /etc/systemd/system/
     systemctl daemon-reload
     systemctl enable --now asus-control-daemon.service
     echo -e "${GREEN}✓ Systemd service enabled and started${NC}"
@@ -142,8 +195,8 @@ fi
 USER_SYSTEMD_DIR="/usr/lib/systemd/user"
 USER_WANTS_DIR="$USER_SYSTEMD_DIR/graphical-session.target.wants"
 if [ -f "$SYSTEMD_DIR/asus-control-hotkey-agent.service" ]; then
-    mkdir -p "$USER_WANTS_DIR"
-    cp "$SYSTEMD_DIR/asus-control-hotkey-agent.service" "$USER_SYSTEMD_DIR/"
+    install -d -m 0755 "$USER_WANTS_DIR"
+    install -m 0644 "$SYSTEMD_DIR/asus-control-hotkey-agent.service" "$USER_SYSTEMD_DIR/"
     ln -sfn ../asus-control-hotkey-agent.service \
         "$USER_SYSTEMD_DIR/graphical-session.target.wants/asus-control-hotkey-agent.service"
     echo -e "${GREEN}✓ ROG hotkey session agent enabled for graphical sessions${NC}"
@@ -157,8 +210,8 @@ echo -e "${GREEN}✓ D-Bus reloaded${NC}"
 # Install udev rules (for non-sysfs devices)
 echo ""
 echo -e "${YELLOW}Installing udev rules...${NC}"
-if [ -f "99-asus-control.rules" ]; then
-    cp 99-asus-control.rules /etc/udev/rules.d/
+if [ -f "$SCRIPT_DIR/99-asus-control.rules" ]; then
+    install -m 0644 "$SCRIPT_DIR/99-asus-control.rules" /etc/udev/rules.d/
     udevadm control --reload-rules
     udevadm trigger
     echo -e "${GREEN}✓ Udev rules installed${NC}"

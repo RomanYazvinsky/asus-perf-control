@@ -22,6 +22,9 @@ system daemon.
 %package gui
 Summary:        ASUS Linux Control Flutter desktop application
 Requires:       asus-linux-control-daemon = %{version}-%{release}
+Requires(post): systemd
+Requires(preun): systemd
+Requires(postun): systemd
 
 %description gui
 Flutter desktop application for ASUS Linux Control.
@@ -99,6 +102,15 @@ echo "Run 'sudo systemctl enable --now asus-control-daemon.service' to start ASU
 
 %postun daemon
 %systemd_postun_with_restart asus-control-daemon.service
+
+%post gui
+%systemd_user_post asus-control-hotkey-agent.service
+
+%preun gui
+%systemd_user_preun asus-control-hotkey-agent.service
+
+%postun gui
+%systemd_user_postun_with_restart asus-control-hotkey-agent.service
 
 %files
 %doc README.md

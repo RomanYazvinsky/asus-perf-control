@@ -1,0 +1,25 @@
+_refresh_hotkey_agent_for_graphical_users() {
+  local runtime_dir uid user
+
+  for runtime_dir in /run/user/[0-9]*; do
+    [ -d "$runtime_dir" ] || continue
+    uid="${runtime_dir##*/}"
+    user="$(getent passwd "$uid" | cut -d: -f1)"
+    [ -n "$user" ] || continue
+
+    if runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user --quiet is-active graphical-session.target >/dev/null 2>&1; then
+      runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user daemon-reload >/dev/null 2>&1 || true
+      runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user restart asus-control-hotkey-agent.service >/dev/null 2>&1 || true
+    fi
+  done
+
+  return 0
+}
+
+post_install() {
+  _refresh_hotkey_agent_for_graphical_users
+}
+
+post_upgrade() {
+  _refresh_hotkey_agent_for_graphical_users
+}

@@ -167,6 +167,31 @@ void main() {
       expect(installer, isNot(contains('systemctl --user')));
     });
 
+    test('root installer resolves paths and delegates sudo builds', () {
+      final installer = File('install/install.sh').readAsStringSync();
+
+      expect(installer, contains('SCRIPT_DIR='));
+      expect(installer, contains('PROJECT_ROOT='));
+      expect(installer, isNot(contains('DAEMON_SOURCE="../rust_daemon"')));
+      expect(installer, contains(r'runuser -u "$SUDO_USER"'));
+      expect(installer, contains(r'HOME="$BUILD_HOME"'));
+      expect(installer, contains('cargo build --release --bins'));
+      expect(
+        installer,
+        contains('Build the release binaries as your regular user'),
+      );
+    });
+
+    test('installer atomically replaces binaries with explicit modes', () {
+      final installer = File('install/install.sh').readAsStringSync();
+
+      expect(installer, contains('mktemp'));
+      expect(installer, contains('install -m 0755'));
+      expect(installer, contains('mv -f'));
+      expect(installer, contains('install -d -m 0755'));
+      expect(installer, contains('install -m 0644'));
+    });
+
     test('GUI split packages own the ROG hotkey session agent', () {
       final pkgbuild = File('packaging/arch/PKGBUILD').readAsStringSync();
       final spec = File(
@@ -208,6 +233,53 @@ void main() {
       expect(rpmDaemon, isNot(contains('asus-control-hotkey-agent')));
       expect(pkgbuild, contains('ln -s ../asus-control-hotkey-agent.service'));
       expect(spec, contains('ln -s ../asus-control-hotkey-agent.service'));
+    });
+
+    test('RPM GUI package runs systemd user service scriptlets', () {
+      final spec = File(
+        'packaging/rpm/asus-linux-control.spec',
+      ).readAsStringSync();
+
+      expect(spec, contains('Requires(post): systemd'));
+      expect(spec, contains('Requires(preun): systemd'));
+      expect(spec, contains('Requires(postun): systemd'));
+      expect(
+        spec,
+        contains('%systemd_user_post asus-control-hotkey-agent.service'),
+      );
+      expect(
+        spec,
+        contains('%systemd_user_preun asus-control-hotkey-agent.service'),
+      );
+      expect(
+        spec,
+        contains(
+          '%systemd_user_postun_with_restart asus-control-hotkey-agent.service',
+        ),
+      );
+    });
+
+    test('Arch GUI hook refreshes active graphical user managers safely', () {
+      final pkgbuild = File('packaging/arch/PKGBUILD').readAsStringSync();
+      final hookFile = File('packaging/arch/asus-linux-control-gui.install');
+
+      expect(pkgbuild, contains('install=asus-linux-control-gui.install'));
+      expect(hookFile.existsSync(), isTrue);
+      final hook = hookFile.readAsStringSync();
+      expect(hook, contains('runuser -u'));
+      expect(hook, contains('XDG_RUNTIME_DIR='));
+      expect(hook, contains('graphical-session.target'));
+      expect(hook, contains('systemctl --user daemon-reload'));
+      expect(
+        hook,
+        contains('systemctl --user restart asus-control-hotkey-agent.service'),
+      );
+      expect(hook, contains('|| true'));
+      expect(
+        hook,
+        isNot(matches(RegExp(r'^\s*systemctl --user', multiLine: true))),
+      );
+      expect(hook, isNot(contains('gtk-launch')));
     });
   });
 }
