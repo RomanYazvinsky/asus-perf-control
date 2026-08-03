@@ -1,5 +1,6 @@
 pub mod cpu_boost;
 pub mod fan;
+pub mod rog_mkey;
 pub mod temp;
 use thiserror::Error;
 
