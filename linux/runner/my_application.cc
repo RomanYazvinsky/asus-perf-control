@@ -14,6 +14,14 @@ struct _MyApplication {
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 
+static GApplicationFlags application_flags() {
+#if GLIB_CHECK_VERSION(2, 74, 0)
+  return G_APPLICATION_DEFAULT_FLAGS;
+#else
+  return G_APPLICATION_FLAGS_NONE;
+#endif
+}
+
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
@@ -24,6 +32,16 @@ static void my_application_activate(GApplication* application) {
   GtkApplication* gtk_application = GTK_APPLICATION(application);
   GtkWindow* active_window =
       gtk_application_get_active_window(gtk_application);
+  if (active_window == nullptr) {
+    // The list and its windows are owned by GtkApplication.
+    for (GList* windows = gtk_application_get_windows(gtk_application);
+         windows != nullptr; windows = windows->next) {
+      if (GTK_IS_WINDOW(windows->data)) {
+        active_window = GTK_WINDOW(windows->data);
+        break;
+      }
+    }
+  }
   if (active_window != nullptr) {
     gtk_window_present(active_window);
     return;
@@ -151,5 +169,5 @@ MyApplication* my_application_new() {
 
   return MY_APPLICATION(g_object_new(my_application_get_type(),
                                      "application-id", APPLICATION_ID, "flags",
-                                     G_APPLICATION_DEFAULT_FLAGS, nullptr));
+                                     application_flags(), nullptr));
 }
