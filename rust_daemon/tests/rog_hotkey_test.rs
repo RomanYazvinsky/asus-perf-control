@@ -9,8 +9,8 @@ mod rog_input;
 
 use anyhow::{anyhow, Result};
 use rog_hotkey::{
-    fallback_enabled, handle_after_monitor_spawn, monitor_policy, next_backoff, require_prepared,
-    FirmwareRestorer, RogHotkeyHandle, RogHotkeyStatus, RogHotkeyStatusStore,
+    fallback_enabled, handle_after_monitor_spawn, monitor_policy, require_prepared, retry_delay,
+    should_warn_failure, FirmwareRestorer, RogHotkeyHandle, RogHotkeyStatus, RogHotkeyStatusStore,
 };
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -74,14 +74,19 @@ fn prepare_failure_is_fatal_even_when_fallback_was_requested() {
 }
 
 #[test]
-fn backoff_is_capped_exponential() {
-    let expected = [1, 2, 4, 8, 16, 32, 60, 60];
-    let mut backoff = Duration::ZERO;
+fn retry_delay_never_exceeds_one_second() {
+    assert_eq!(retry_delay(), Duration::from_secs(1));
+    assert!(retry_delay() <= Duration::from_secs(1));
+}
 
-    for seconds in expected {
-        backoff = next_backoff(backoff);
-        assert_eq!(backoff, Duration::from_secs(seconds));
-    }
+#[test]
+fn warning_schedule_is_limited_to_first_and_power_of_two_failures() {
+    let decisions = (1..=10).map(should_warn_failure).collect::<Vec<_>>();
+
+    assert_eq!(
+        decisions,
+        vec![true, true, false, true, false, false, false, true, false, false]
+    );
 }
 
 struct FakeRestorer {

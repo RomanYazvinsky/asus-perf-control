@@ -159,16 +159,12 @@ pub fn require_prepared<T>(result: Result<T>, _fallback_requested: bool) -> Resu
     })
 }
 
-pub fn next_backoff(current: Duration) -> Duration {
-    match current.as_secs() {
-        0 => Duration::from_secs(1),
-        1 => Duration::from_secs(2),
-        2 => Duration::from_secs(4),
-        4 => Duration::from_secs(8),
-        8 => Duration::from_secs(16),
-        16 => Duration::from_secs(32),
-        _ => Duration::from_secs(60),
-    }
+pub const fn retry_delay() -> Duration {
+    Duration::from_secs(1)
+}
+
+pub const fn should_warn_failure(consecutive_failures: u64) -> bool {
+    consecutive_failures.is_power_of_two()
 }
 
 pub trait FirmwareRestorer: Send {
@@ -300,7 +296,7 @@ fn run_monitor_supervisor(
     sender: Sender<()>,
     status: RogHotkeyStatusStore,
 ) {
-    let mut backoff = Duration::ZERO;
+    let mut consecutive_failures = 0_u64;
     let dropped = status.dropped_counter();
 
     while !shutdown.load(Ordering::Acquire) {
@@ -328,7 +324,7 @@ fn run_monitor_supervisor(
         }
 
         if opened.load(Ordering::Acquire) {
-            backoff = Duration::ZERO;
+            consecutive_failures = 0;
         }
         let error = result.unwrap_err();
         if receiver_disconnected(&error) {
@@ -336,20 +332,20 @@ fn run_monitor_supervisor(
             status.set_last_error(Some(format!("{error:#}")));
             break;
         }
-        let next = next_backoff(backoff);
-        if next != backoff {
+        consecutive_failures = consecutive_failures.saturating_add(1);
+        if should_warn_failure(consecutive_failures) {
             warn!(
-                "ROG input monitor failed; retrying in {} seconds: {error:#}",
-                next.as_secs()
+                "ROG input monitor failure #{consecutive_failures}; retrying in 1 second: {error:#}"
             );
         } else {
-            debug!("ROG input monitor still unavailable at capped backoff: {error:#}");
+            debug!(
+                "ROG input monitor failure #{consecutive_failures}; retrying in 1 second: {error:#}"
+            );
         }
         status.set_last_error(Some(format!("{error:#}")));
         status.set_monitor_state("backoff");
-        backoff = next;
 
-        if wait_for_shutdown(&shutdown, backoff) {
+        if wait_for_shutdown(&shutdown, retry_delay()) {
             break;
         }
     }
