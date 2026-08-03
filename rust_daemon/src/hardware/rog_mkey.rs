@@ -1,4 +1,4 @@
-use std::{thread, time::Duration};
+use std::{collections::HashSet, hash::Hash, thread, time::Duration};
 
 use anyhow::{anyhow, ensure, Context, Result};
 
@@ -153,6 +153,46 @@ pub(crate) fn select_capable_candidate<T>(
     }
 }
 
+pub(crate) fn finalize_discovery<T>(
+    candidates: Vec<ProbedCandidate<T>>,
+    failures: Vec<String>,
+) -> Result<ProbedCandidate<T>> {
+    if !failures.is_empty() {
+        let capable_identities = candidates
+            .iter()
+            .filter(|candidate| candidate.layout.rog_slot().is_some())
+            .map(|candidate| candidate.identity.as_str())
+            .collect::<Vec<_>>();
+        return Err(anyhow!(
+            "incomplete ASUS M-key discovery; capable candidates: {}; failures: {}",
+            if capable_identities.is_empty() {
+                "none".to_string()
+            } else {
+                capable_identities.join("; ")
+            },
+            failures.join("; ")
+        ));
+    }
+
+    select_capable_candidate(candidates)
+}
+
+pub(crate) fn deduplicate_by_path<T, K, F>(candidates: Vec<T>, path: F) -> Vec<T>
+where
+    K: Eq + Hash,
+    F: Fn(&T) -> K,
+{
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|candidate| seen.insert(path(candidate)))
+        .collect()
+}
+
+pub(crate) fn feature_report_context(identity: &str) -> String {
+    format!("failed to send ASUS M-key feature report to {identity}")
+}
+
 pub struct HidMKeyTransport {
     device: hidapi::HidDevice,
     identity: String,
@@ -164,11 +204,19 @@ impl HidMKeyTransport {
         let mut failures = Vec::new();
         let mut probed = Vec::new();
 
-        for info in api.device_list().filter(|info| {
-            info.vendor_id() == ASUS_VENDOR_ID
-                && info.usage_page() == ASUS_MKEY_USAGE_PAGE
-                && info.usage() == ASUS_MKEY_USAGE
-        }) {
+        let matching_candidates = api
+            .device_list()
+            .filter(|info| {
+                info.vendor_id() == ASUS_VENDOR_ID
+                    && info.usage_page() == ASUS_MKEY_USAGE_PAGE
+                    && info.usage() == ASUS_MKEY_USAGE
+            })
+            .cloned()
+            .collect();
+        let unique_candidates =
+            deduplicate_by_path(matching_candidates, |info| info.path().to_bytes().to_vec());
+
+        for info in unique_candidates {
             let candidate = format!(
                 "ASUS HID {:04x}:{:04x} at {}",
                 info.vendor_id(),
@@ -223,16 +271,7 @@ impl HidMKeyTransport {
             }
         }
 
-        let selected = select_capable_candidate(probed).map_err(|selection_error| {
-            if failures.is_empty() {
-                selection_error
-            } else {
-                anyhow!(
-                    "{selection_error:#}; probe failures: {}",
-                    failures.join("; ")
-                )
-            }
-        })?;
+        let selected = finalize_discovery(probed, failures)?;
 
         Ok((selected.transport, selected.layout))
     }
@@ -250,7 +289,7 @@ impl MKeyTransport for HidMKeyTransport {
     fn send_feature(&mut self, report: &[u8]) -> Result<()> {
         self.device
             .send_feature_report(report)
-            .context("failed to send ASUS M-key feature report")
+            .with_context(|| feature_report_context(&self.identity))
     }
 }
 

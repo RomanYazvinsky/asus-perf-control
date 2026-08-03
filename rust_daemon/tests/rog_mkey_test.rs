@@ -6,9 +6,9 @@ mod hardware;
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use hardware::rog_mkey::{
-    parse_layout, probe_request, select_capable_candidate, set_opcode_request,
-    FirmwareBindingGuard, MKeyTransport, ProbedCandidate, AURA_REPORT_ID, FEATURE_REPORT_LEN,
-    ROG_OPCODE,
+    deduplicate_by_path, feature_report_context, finalize_discovery, parse_layout, probe_request,
+    select_capable_candidate, set_opcode_request, FirmwareBindingGuard, MKeyTransport,
+    ProbedCandidate, AURA_REPORT_ID, FEATURE_REPORT_LEN, ROG_OPCODE,
 };
 
 #[derive(Default)]
@@ -318,4 +318,68 @@ fn capable_selection_rejects_ambiguous_devices() {
     assert!(error.contains("ambiguous"));
     assert!(error.contains("/dev/hidraw1"));
     assert!(error.contains("/dev/hidraw2"));
+}
+
+#[test]
+fn discovery_finalization_fails_closed_when_any_candidate_probe_failed() {
+    let capable = probed_candidate("/dev/hidraw1", &[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]);
+    let failures = vec!["/dev/hidraw2: probe request failed: permission denied".to_string()];
+
+    let error = finalize_discovery(vec![capable], failures)
+        .err()
+        .expect("incomplete discovery must fail")
+        .to_string();
+
+    assert!(error.contains("/dev/hidraw1"));
+    assert!(error.contains("/dev/hidraw2"));
+    assert!(error.contains("permission denied"));
+}
+
+#[test]
+fn discovery_finalization_accepts_one_capable_candidate_without_failures() {
+    let capable = probed_candidate("/dev/hidraw1", &[0x5d, 0x9f, 0x02, 0, 4, 2, 3, 1, 14]);
+
+    let selected = finalize_discovery(vec![capable], Vec::new()).unwrap();
+
+    assert_eq!(selected.identity, "/dev/hidraw1");
+}
+
+#[test]
+fn discovery_finalization_retains_failures_when_no_candidate_is_capable() {
+    let failures = vec!["/dev/hidraw2: read failed: timeout".to_string()];
+
+    let error = finalize_discovery::<()>(Vec::new(), failures)
+        .err()
+        .expect("failed discovery must retain diagnostics")
+        .to_string();
+
+    assert!(error.contains("/dev/hidraw2"));
+    assert!(error.contains("timeout"));
+}
+
+#[test]
+fn exact_usage_candidates_are_deduplicated_by_hid_path() {
+    let candidates = vec![
+        ("first record", "/dev/hidraw1"),
+        ("duplicate record", "/dev/hidraw1"),
+        ("other device", "/dev/hidraw2"),
+    ];
+
+    let unique = deduplicate_by_path(candidates, |candidate| candidate.1.to_string());
+
+    assert_eq!(
+        unique,
+        vec![
+            ("first record", "/dev/hidraw1"),
+            ("other device", "/dev/hidraw2"),
+        ]
+    );
+}
+
+#[test]
+fn feature_report_error_context_identifies_the_hid_device() {
+    let context = feature_report_context("ASUS HID 0b05:1abe at /dev/hidraw4");
+
+    assert!(context.contains("0b05:1abe"));
+    assert!(context.contains("/dev/hidraw4"));
 }
