@@ -47,8 +47,8 @@ impl RogEventMatcher {
     }
 
     pub fn accept(&mut self, event: RawInputEvent, now: Instant) -> bool {
-        if event == RawInputEvent::new(EV_MSC, MSC_SCAN, ROG_SCAN) {
-            self.pending_scan = true;
+        if event.kind == EV_MSC && event.code == MSC_SCAN {
+            self.pending_scan = event.value == ROG_SCAN;
             return false;
         }
 
@@ -80,7 +80,14 @@ impl RogEventMatcher {
     }
 }
 
-pub fn monitor(path: impl AsRef<Path>, mut on_press: impl FnMut()) -> Result<()> {
+/// Opens and monitors one input device instance.
+///
+/// This returns on open, read, or channel failure. The caller or supervisor owns retry/backoff
+/// and process shutdown.
+pub fn monitor_once(
+    path: impl AsRef<Path>,
+    sender: tokio::sync::mpsc::UnboundedSender<()>,
+) -> Result<()> {
     let path = path.as_ref();
     let mut device = evdev::Device::open(path)
         .with_context(|| format!("failed to open ROG input device {}", path.display()))?;
@@ -93,7 +100,12 @@ pub fn monitor(path: impl AsRef<Path>, mut on_press: impl FnMut()) -> Result<()>
 
         for event in events {
             if matcher.accept(event.into(), Instant::now()) {
-                on_press();
+                sender.send(()).with_context(|| {
+                    format!(
+                        "failed to send ROG press from input device {}: receiver is gone",
+                        path.display()
+                    )
+                })?;
             }
         }
     }
