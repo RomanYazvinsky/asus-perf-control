@@ -40,9 +40,10 @@ echo ""
 echo -e "${YELLOW}Checking for Rust daemon...${NC}"
 DAEMON_SOURCE="../rust_daemon"
 DAEMON_BINARY="$DAEMON_SOURCE/target/release/asus-control-daemon"
+AGENT_BINARY="$DAEMON_SOURCE/target/release/asus-control-hotkey-agent"
 
-if [ ! -f "$DAEMON_BINARY" ]; then
-    echo -e "${YELLOW}Daemon not found. Building...${NC}"
+if [ ! -f "$DAEMON_BINARY" ] || [ ! -f "$AGENT_BINARY" ]; then
+    echo -e "${YELLOW}Daemon or hotkey agent not found. Building...${NC}"
     
     if [ ! -d "$DAEMON_SOURCE" ]; then
         echo -e "${RED}Error: rust_daemon directory not found${NC}"
@@ -56,14 +57,14 @@ if [ ! -f "$DAEMON_BINARY" ]; then
         echo "Please install Rust: https://rustup.rs/"
         echo ""
         echo "Or build the daemon manually:"
-        echo "  cd ../rust_daemon && cargo build --release && cd ../install"
+        echo "  cd ../rust_daemon && cargo build --release --bins && cd ../install"
         exit 1
     fi
 
     # Build daemon in release mode (WITHOUT sudo)
     echo "Compiling daemon (this may take a minute)..."
-    (cd "$DAEMON_SOURCE" && cargo build --release) || {
-        echo -e "${RED}Failed to build Rust daemon${NC}"
+    (cd "$DAEMON_SOURCE" && cargo build --release --bins) || {
+        echo -e "${RED}Failed to build Rust daemon and hotkey agent${NC}"
         exit 1
     }
     
@@ -100,6 +101,15 @@ else
     exit 1
 fi
 
+if [ -f "$AGENT_BINARY" ]; then
+    cp "$AGENT_BINARY" "$DAEMON_DEST/"
+    chmod 755 "$DAEMON_DEST/asus-control-hotkey-agent"
+    echo -e "${GREEN}✓ ROG hotkey session agent installed to $DAEMON_DEST${NC}"
+else
+    echo -e "${RED}Error: Compiled hotkey agent binary not found${NC}"
+    exit 1
+fi
+
 # Install D-Bus service file
 if [ -f "$DBUS_DIR/com.asuslinuxcontrol.Daemon.service" ]; then
     cp "$DBUS_DIR/com.asuslinuxcontrol.Daemon.service" /usr/share/dbus-1/system-services/
@@ -125,6 +135,18 @@ if [ -f "$SYSTEMD_DIR/asus-control-daemon.service" ]; then
     systemctl daemon-reload
     systemctl enable --now asus-control-daemon.service
     echo -e "${GREEN}✓ Systemd service enabled and started${NC}"
+fi
+
+# Install the per-user hotkey agent globally. The relative wants link enables it for graphical
+# sessions without trying to contact a user's session bus from this root installer.
+USER_SYSTEMD_DIR="/usr/lib/systemd/user"
+USER_WANTS_DIR="$USER_SYSTEMD_DIR/graphical-session.target.wants"
+if [ -f "$SYSTEMD_DIR/asus-control-hotkey-agent.service" ]; then
+    mkdir -p "$USER_WANTS_DIR"
+    cp "$SYSTEMD_DIR/asus-control-hotkey-agent.service" "$USER_SYSTEMD_DIR/"
+    ln -sfn ../asus-control-hotkey-agent.service \
+        "$USER_SYSTEMD_DIR/graphical-session.target.wants/asus-control-hotkey-agent.service"
+    echo -e "${GREEN}✓ ROG hotkey session agent enabled for graphical sessions${NC}"
 fi
 
 # Reload D-Bus

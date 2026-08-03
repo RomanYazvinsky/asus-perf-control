@@ -1,0 +1,13 @@
+[Unit]
+Description=ASUS Linux Control ROG hotkey agent
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/asus-linux-control/asus-control-hotkey-agent
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

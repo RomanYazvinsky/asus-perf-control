@@ -74,7 +74,10 @@ void main() {
       final pkgbuild = File('packaging/arch/PKGBUILD').readAsStringSync();
 
       expect(cmake, contains('set(BINARY_NAME "asus-linux-control")'));
-      expect(spec, contains('build/linux/x64/release/bundle/asus-linux-control'));
+      expect(
+        spec,
+        contains('build/linux/x64/release/bundle/asus-linux-control'),
+      );
       expect(
         pkgbuild,
         contains('build/linux/x64/release/bundle/asus-linux-control'),
@@ -82,12 +85,18 @@ void main() {
     });
 
     test('desktop metadata assets required by packages exist', () {
-      expect(File('packaging/linux/asus-linux-control.desktop').existsSync(), isTrue);
+      expect(
+        File('packaging/linux/asus-linux-control.desktop').existsSync(),
+        isTrue,
+      );
       expect(
         File('packaging/linux/asus-linux-control.metainfo.xml').existsSync(),
         isTrue,
       );
-      expect(File('packaging/linux/asus-linux-control.png').existsSync(), isTrue);
+      expect(
+        File('packaging/linux/asus-linux-control.png').existsSync(),
+        isTrue,
+      );
     });
 
     test('Arch PKGBUILD declares split packages and dependencies', () {
@@ -126,5 +135,79 @@ void main() {
         );
       },
     );
+
+    test('ROG hotkey agent user service has graphical session lifecycle', () {
+      final serviceFile = File(
+        'install/systemd/asus-control-hotkey-agent.service',
+      );
+
+      expect(serviceFile.existsSync(), isTrue);
+      final service = serviceFile.readAsStringSync();
+      expect(
+        service,
+        contains(
+          'ExecStart=/usr/lib/asus-linux-control/asus-control-hotkey-agent',
+        ),
+      );
+      expect(service, contains('Restart=on-failure'));
+      expect(service, contains('WantedBy=graphical-session.target'));
+    });
+
+    test('root installer installs but does not launch the user agent', () {
+      final installer = File('install/install.sh').readAsStringSync();
+
+      expect(installer, contains('target/release/asus-control-hotkey-agent'));
+      expect(installer, contains('/usr/lib/systemd/user'));
+      expect(
+        installer,
+        contains(
+          'graphical-session.target.wants/asus-control-hotkey-agent.service',
+        ),
+      );
+      expect(installer, isNot(contains('systemctl --user')));
+    });
+
+    test('GUI split packages own the ROG hotkey session agent', () {
+      final pkgbuild = File('packaging/arch/PKGBUILD').readAsStringSync();
+      final spec = File(
+        'packaging/rpm/asus-linux-control.spec',
+      ).readAsStringSync();
+
+      expect(pkgbuild, contains('asus-control-hotkey-agent'));
+      expect(pkgbuild, contains('graphical-session.target.wants'));
+      expect(
+        spec,
+        contains('/usr/lib/asus-linux-control/asus-control-hotkey-agent'),
+      );
+      expect(
+        spec,
+        contains('/usr/lib/systemd/user/asus-control-hotkey-agent.service'),
+      );
+      expect(
+        spec,
+        contains(
+          'graphical-session.target.wants/asus-control-hotkey-agent.service',
+        ),
+      );
+
+      final archGui = pkgbuild.substring(
+        pkgbuild.indexOf('package_asus-linux-control-gui()'),
+        pkgbuild.indexOf('package_asus-linux-control-daemon()'),
+      );
+      final archDaemon = pkgbuild.substring(
+        pkgbuild.indexOf('package_asus-linux-control-daemon()'),
+      );
+      final rpmGui = spec.substring(
+        spec.indexOf('%files gui'),
+        spec.indexOf('%files daemon'),
+      );
+      final rpmDaemon = spec.substring(spec.indexOf('%files daemon'));
+      expect(archGui, contains('asus-control-hotkey-agent'));
+      expect(rpmGui, contains('asus-control-hotkey-agent'));
+      expect(archDaemon, isNot(contains('asus-control-hotkey-agent')));
+      expect(rpmDaemon, isNot(contains('asus-control-hotkey-agent')));
+      expect(pkgbuild, contains('ln -s ../asus-control-hotkey-agent.service'));
+      expect(spec, contains('ln -s ../asus-control-hotkey-agent.service'));
+    });
   });
 }

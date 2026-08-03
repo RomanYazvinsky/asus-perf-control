@@ -33,6 +33,13 @@ package_asus-linux-control-gui() {
     "$pkgdir/usr/share/icons/hicolor/256x256/apps/asus-linux-control.png"
   install -Dm644 "$srcdir/$pkgbase-$pkgver/packaging/linux/asus-linux-control.metainfo.xml" \
     "$pkgdir/usr/share/metainfo/asus-linux-control.metainfo.xml"
+  install -Dm755 "$srcdir/$pkgbase-$pkgver/rust_daemon/target/release/asus-control-hotkey-agent" \
+    "$pkgdir/usr/lib/asus-linux-control/asus-control-hotkey-agent"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/install/systemd/asus-control-hotkey-agent.service" \
+    "$pkgdir/usr/lib/systemd/user/asus-control-hotkey-agent.service"
+  install -dm755 "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants"
+  ln -s ../asus-control-hotkey-agent.service \
+    "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/asus-control-hotkey-agent.service"
 }
 
 package_asus-linux-control-daemon() {

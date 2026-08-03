@@ -49,6 +49,7 @@ install -dm0755 %{buildroot}/usr/share/applications
 install -dm0755 %{buildroot}/usr/share/icons/hicolor/256x256/apps
 install -dm0755 %{buildroot}/usr/share/metainfo
 install -dm0755 %{buildroot}/usr/lib/systemd/system
+install -dm0755 %{buildroot}/usr/lib/systemd/user/graphical-session.target.wants
 install -dm0755 %{buildroot}/usr/share/dbus-1/system-services
 install -dm0755 %{buildroot}/usr/share/dbus-1/system.d
 install -dm0755 %{buildroot}/usr/share/polkit-1/actions
@@ -69,6 +70,12 @@ install -Dm0644 packaging/linux/asus-linux-control.png \
   %{buildroot}/usr/share/icons/hicolor/256x256/apps/asus-linux-control.png
 install -Dm0644 packaging/linux/asus-linux-control.metainfo.xml \
   %{buildroot}/usr/share/metainfo/asus-linux-control.metainfo.xml
+install -Dm0755 rust_daemon/target/release/asus-control-hotkey-agent \
+  %{buildroot}/usr/lib/asus-linux-control/asus-control-hotkey-agent
+install -Dm0644 install/systemd/asus-control-hotkey-agent.service \
+  %{buildroot}/usr/lib/systemd/user/asus-control-hotkey-agent.service
+ln -s ../asus-control-hotkey-agent.service \
+  %{buildroot}/usr/lib/systemd/user/graphical-session.target.wants/asus-control-hotkey-agent.service
 
 install -Dm0755 rust_daemon/target/release/asus-control-daemon \
   %{buildroot}/usr/lib/asus-linux-control/asus-control-daemon
@@ -102,6 +109,9 @@ echo "Run 'sudo systemctl enable --now asus-control-daemon.service' to start ASU
 /usr/share/applications/asus-linux-control.desktop
 /usr/share/icons/hicolor/256x256/apps/asus-linux-control.png
 /usr/share/metainfo/asus-linux-control.metainfo.xml
+/usr/lib/asus-linux-control/asus-control-hotkey-agent
+/usr/lib/systemd/user/asus-control-hotkey-agent.service
+/usr/lib/systemd/user/graphical-session.target.wants/asus-control-hotkey-agent.service
 
 %files daemon
 /usr/lib/asus-linux-control/asus-control-daemon
