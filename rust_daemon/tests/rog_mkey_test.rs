@@ -3,7 +3,9 @@
 #[path = "../src/hardware/mod.rs"]
 mod hardware;
 
-use hardware::rog_mkey::{parse_layout, probe_request, set_opcode_request};
+use hardware::rog_mkey::{
+    parse_layout, probe_request, set_opcode_request, AURA_REPORT_ID, ROG_OPCODE,
+};
 
 #[test]
 fn parses_five_slot_layout_with_rog_key_in_last_slot() {
@@ -25,6 +27,41 @@ fn rejects_truncated_layout_response() {
 }
 
 #[test]
+fn rejects_zero_slot_layout() {
+    assert!(parse_layout(&[0x5d, 0x9f, 0x02, 0, 0]).is_err());
+}
+
+#[test]
+fn rejects_invalid_layout_header() {
+    assert!(parse_layout(&[0x5d, 0x9f, 0x03, 0, 1, 4]).is_err());
+}
+
+#[test]
+fn rog_slot_requires_more_than_three_slots() {
+    let three_slots = parse_layout(&[0x5d, 0x9f, 0x02, 0, 3, 1, 2, 4]).unwrap();
+    let four_slots = parse_layout(&[0x5d, 0x9f, 0x02, 0, 4, 1, 2, 3, 4]).unwrap();
+
+    assert_eq!(three_slots.rog_slot(), None);
+    assert_eq!(three_slots.rog_opcode(), None);
+    assert_eq!(four_slots.rog_slot(), Some(3));
+    assert_eq!(four_slots.rog_opcode(), Some(4));
+}
+
+#[test]
+fn accepts_eight_slot_layout() {
+    let layout = parse_layout(&[0x5d, 0x9f, 0x02, 0, 8, 1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+
+    assert_eq!(layout.rog_slot(), Some(7));
+    assert_eq!(layout.rog_opcode(), Some(8));
+}
+
+#[test]
+fn exposes_protocol_constants() {
+    assert_eq!(AURA_REPORT_ID, 0x5d);
+    assert_eq!(ROG_OPCODE, 4);
+}
+
+#[test]
 fn builds_zero_padded_probe_request() {
     let request = probe_request(8);
 
@@ -33,11 +70,29 @@ fn builds_zero_padded_probe_request() {
 }
 
 #[test]
+#[should_panic(expected = "M-key probe report must be at least 4 bytes")]
+fn rejects_short_probe_report() {
+    probe_request(3);
+}
+
+#[test]
 fn builds_zero_padded_set_opcode_request() {
     let request = set_opcode_request(8, 4, 4);
 
     assert_eq!(&request[..6], &[0x5d, 0x9f, 0x03, 0x01, 4, 4]);
     assert_eq!(request, vec![0x5d, 0x9f, 0x03, 0x01, 4, 4, 0, 0]);
+}
+
+#[test]
+#[should_panic(expected = "M-key set-opcode report must be at least 6 bytes")]
+fn rejects_short_set_opcode_report() {
+    set_opcode_request(5, 4, 4);
+}
+
+#[test]
+#[should_panic(expected = "M-key slot must be less than 8")]
+fn rejects_out_of_range_set_opcode_slot() {
+    set_opcode_request(8, 8, 4);
 }
 
 #[test]

@@ -23,25 +23,30 @@ impl MKeyLayout {
 }
 
 pub fn probe_request(report_len: usize) -> Vec<u8> {
+    assert!(
+        report_len >= 4,
+        "M-key probe report must be at least 4 bytes"
+    );
     let mut request = vec![0; report_len];
-    if report_len >= 4 {
-        request[..4].copy_from_slice(&[AURA_REPORT_ID, 0x9f, LAYOUT_COMMAND, 0]);
-    }
+    request[..4].copy_from_slice(&[AURA_REPORT_ID, 0x9f, LAYOUT_COMMAND, 0]);
     request
 }
 
 pub fn set_opcode_request(report_len: usize, slot: usize, opcode: u8) -> Vec<u8> {
+    assert!(
+        report_len >= 6,
+        "M-key set-opcode report must be at least 6 bytes"
+    );
+    assert!(slot < 8, "M-key slot must be less than 8");
     let mut request = vec![0; report_len];
-    if report_len >= 6 {
-        request[..6].copy_from_slice(&[
-            AURA_REPORT_ID,
-            0x9f,
-            SET_OPCODE_COMMAND,
-            0x01,
-            slot as u8,
-            opcode,
-        ]);
-    }
+    request[..6].copy_from_slice(&[
+        AURA_REPORT_ID,
+        0x9f,
+        SET_OPCODE_COMMAND,
+        0x01,
+        slot as u8,
+        opcode,
+    ]);
     request
 }
 
