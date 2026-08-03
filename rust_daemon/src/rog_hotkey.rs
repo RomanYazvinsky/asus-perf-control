@@ -221,6 +221,12 @@ impl RogHotkeyHandle {
         }
     }
 
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub fn set_cancellation_for_test(&mut self, cancellation: UnixStream) {
+        self.cancellation = Some(cancellation);
+    }
+
     fn finish(&mut self, restore_attempts: usize) -> Result<()> {
         if self.cleanup_attempted {
             return Ok(());
@@ -230,7 +236,9 @@ impl RogHotkeyHandle {
 
         if let Some(cancellation) = self.cancellation.as_mut() {
             if let Err(error) = cancellation.write_all(&[1]) {
-                failures.push(format!("failed to wake ROG input monitor: {error}"));
+                let message = format!("failed to wake ROG input monitor: {error}");
+                warn!("{message}");
+                self.status.set_last_error(Some(message));
             }
         }
 

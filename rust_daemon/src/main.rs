@@ -235,6 +235,20 @@ async fn monitor_platform_profile_changes(conn: zbus::Connection) {
     }
 }
 
+async fn shutdown_already_pending(
+    sigint: &mut tokio::signal::unix::Signal,
+    sigterm: &mut tokio::signal::unix::Signal,
+) -> bool {
+    tokio::time::timeout(Duration::from_millis(1), async {
+        tokio::select! {
+            _ = sigint.recv() => (),
+            _ = sigterm.recv() => (),
+        }
+    })
+    .await
+    .is_ok()
+}
+
 #[interface(name = "com.asuslinuxcontrol.Daemon")]
 impl AsusControlDaemon {
     /// Read ROG hotkey runtime diagnostics.
@@ -606,7 +620,7 @@ async fn main() -> Result<()> {
         .build()
         .await?;
 
-    info!("ASUS Control Daemon started successfully");
+    info!("ASUS Control D-Bus service is ready");
 
     // Apply saved temperature limit for the active platform profile on startup.
     if let Err(e) = apply_active_profile_temp_limit(&_conn).await {
@@ -628,9 +642,15 @@ async fn main() -> Result<()> {
         // Continue anyway - not critical
     }
 
+    if shutdown_already_pending(&mut sigint, &mut sigterm).await {
+        info!("Shutdown signal received during startup; skipping ROG firmware mutation");
+        return Ok(());
+    }
+
     // Mutate ROG firmware only after all potentially blocking startup calls are complete.
     let (mut rog_hotkey_handle, mut rog_press_receiver) =
         rog_hotkey::start(rog_hotkey_status.clone())?;
+    info!("ASUS Control Daemon started successfully");
 
     let rog_signal_connection = _conn.clone();
     let rog_signal_status = rog_hotkey_status.clone();

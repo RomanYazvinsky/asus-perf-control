@@ -13,6 +13,7 @@ use rog_hotkey::{
     require_prepared, retry_delay, should_warn_failure, FirmwareRestorer, RogHotkeyHandle,
     RogHotkeyStatus, RogHotkeyStatusStore, HEALTHY_SESSION,
 };
+use std::os::unix::net::UnixStream;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
@@ -196,6 +197,28 @@ fn successful_shutdown_restores_once_and_updates_live_status() {
 }
 
 #[test]
+fn cancellation_wake_failure_does_not_override_successful_restore() {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let (restorer, attempts) = test_restorer(0, shutdown.clone(), events);
+    let status = RogHotkeyStatusStore::new(RogHotkeyStatus::unsupported("test"));
+    let (cancellation_read, cancellation_write) = UnixStream::pair().unwrap();
+    drop(cancellation_read);
+    let mut handle =
+        RogHotkeyHandle::from_parts_for_test(Some(restorer), shutdown, None, status.clone());
+    handle.set_cancellation_for_test(cancellation_write);
+
+    handle.shutdown().unwrap();
+
+    assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    assert!(status
+        .snapshot()
+        .last_error
+        .unwrap()
+        .contains("wake ROG input monitor"));
+}
+
+#[test]
 fn status_store_serializes_fresh_signal_and_drop_diagnostics() {
     let status = RogHotkeyStatusStore::new(RogHotkeyStatus::unsupported("test"));
     status.dropped_counter().store(7, Ordering::Relaxed);
@@ -249,11 +272,17 @@ fn signals_are_registered_before_firmware_runtime_starts() {
     let sigint = source.find("SignalKind::interrupt").unwrap();
     let sigterm = source.find("SignalKind::terminate").unwrap();
     let dbus_ready = source.find(".build()\n        .await?").unwrap();
+    let pending_guard = source.rfind("shutdown_already_pending(").unwrap();
     let startup = source.find("rog_hotkey::start(").unwrap();
+    let started_log = source
+        .find("ASUS Control Daemon started successfully")
+        .unwrap();
 
     assert!(sigint < startup);
     assert!(sigterm < startup);
     assert!(dbus_ready < startup);
+    assert!(pending_guard < startup);
+    assert!(startup < started_log);
 }
 
 #[test]
