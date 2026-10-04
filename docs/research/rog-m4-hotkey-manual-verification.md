@@ -20,7 +20,7 @@ system daemon and the per-user hotkey agent.
    Linux Control GUI process appears.
 
 3. Minimize the GUI, press ROG/M4, and verify the same process and window are
-   presented instead of starting another process or Flutter window.
+   presented instead of starting another process or application window.
 
 4. Press ROG/M4 twice within 300 ms and verify debounce prevents duplicate
    activation.

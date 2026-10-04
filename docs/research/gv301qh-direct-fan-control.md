@@ -291,11 +291,11 @@ Decision:
 - Proceed to read-only probe: no
 - Stop research: yes
 
-## G-Helper `source.cs` AsusSAIO Findings
+## G-Helper `ghelper-asus-saio-source.cs` AsusSAIO Findings
 
-After reviewing the locally provided `source.cs`, the G-Helper experimental direct fan path is not the same as the normal ASUS ACPI `DEVS/DSTS` fan curve path.
+After reviewing the locally provided `ghelper-asus-saio-source.cs`, the G-Helper experimental direct fan path is not the same as the normal ASUS ACPI `DEVS/DSTS` fan curve path.
 
-`source.cs` uses the Windows `AsusSAIO` driver and `AsusWinIO64.dll`:
+`ghelper-asus-saio-source.cs` uses the Windows `AsusSAIO` driver and `AsusWinIO64.dll`:
 
 ```text
 Device path: \\.\AsusSAIO
@@ -306,7 +306,7 @@ Output selector byte: input[10]
 Return byte used by code: output[11]
 ```
 
-Observed fan protocol from `source.cs`:
+Observed fan protocol from `ghelper-asus-saio-source.cs`:
 
 ```text
 FanInit:
@@ -352,7 +352,7 @@ Interpretation:
 
 Correction to earlier ACPI candidate interpretation:
 
-- `0x00110022` and `0x00110023` are still fan-related ACPI/WMI IDs, but they are not the `source.cs` direct fan speed path.
+- `0x00110022` and `0x00110023` are still fan-related ACPI/WMI IDs, but they are not the `ghelper-asus-saio-source.cs` direct fan speed path.
 - The likely direct-control target is now the AsusSAIO command protocol (`BB 01 50`, `DD 03 82 31/32/35`, `DD 03 02 33/34`), not the standard `asus-wmi` `DEVS/DSTS` fan curve/range path.
 - Linux does not expose `\\.\AsusSAIO` or `AsusWinIO64.dll`, so the key unknown is whether the same low-level protocol is reachable through Linux ACPI/WMI/EC mechanisms without porting the Windows driver.
 
@@ -426,9 +426,9 @@ The Windows `AsusSAIO` direct fan protocol is documented, but no safe Linux tran
 
 Direct fan duty or target RPM control is not currently exposed on this GV301QH Linux stack. The application should not claim G-Helper-like direct fan control yet. Supported fan control remains custom curves and dynamic curve updates through `asus-wmi`/`asusd`/`hwmon`.
 
-Do not add Flutter or daemon API for direct fan duty yet. The smallest safe next step is a separate SAIO-focused research plan:
+Do not add UI or daemon API for direct fan duty yet. The smallest safe next step is a separate SAIO-focused research plan:
 
-1. Determine whether the `source.cs` AsusSAIO command protocol has a safe Linux transport.
+1. Determine whether the `ghelper-asus-saio-source.cs` AsusSAIO command protocol has a safe Linux transport.
 2. Prefer read-only commands first, such as fan count, CPU temperature, and RPM reads.
 3. Attempt manual mode and speed writes only after transport semantics and auto-restore behavior are proven.
 4. Keep all write probes high-duty only, short-lived, logged, and manually approved.

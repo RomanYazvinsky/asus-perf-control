@@ -26,7 +26,7 @@ flowchart LR
     UI[egui screens/widgets]
     Bloc[features]
     Service[Services]
-    FFI[rust_core]
+    Core[rust_core]
     OwnClient[DaemonClient]
     AsusdClient[AsusdClient]
     SupergfxClient[SupergfxClient]
@@ -42,7 +42,7 @@ flowchart LR
   end
 
   UI --> Bloc --> Service
-  Service --> FFI --> Sysfs
+  Service --> Core --> Sysfs
   Service --> OwnClient --> OwnDaemon --> Polkit
   Service --> AsusdClient --> Asusd
   Service --> SupergfxClient --> Supergfxd

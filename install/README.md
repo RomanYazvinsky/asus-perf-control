@@ -15,11 +15,13 @@ asus-linux-control (Rust UI) → D-Bus → asus-control-daemon (root) → sysfs
 ## Files
 
 - `99-asus-control.rules` - udev rules for USB HID devices and hwmon (read-only access)
-- `dbus/` - D-Bus daemon and polkit configuration
+- `dbus/` - D-Bus service activation, bus policy and polkit actions
+- `systemd/` - daemon unit, ROG hotkey drop-in and the user hotkey agent unit
 - `install.sh` - Installation script to deploy daemon, rules, and permissions
+- `rebuild-daemon.sh` - Rebuild and reinstall only the daemon during development
 - `DBUS_INSTALLATION.md` - Detailed D-Bus setup and security documentation
 
-`dbus/asus-control-daemon.python.legacy` is kept only as a migration reference for the previous Python daemon. The install script uses the Rust daemon path and should not prefer the legacy daemon.
+The daemon itself is built from `rust_daemon/` (`make install` builds it first).
 
 ## Usage
 
