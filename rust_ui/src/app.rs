@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use egui::{Align, Layout, RichText, Vec2};
+use egui::{Align, Align2, FontId, Layout, Vec2};
 
 use crate::features::services::Services;
 use crate::input::{AppCommands, InputBridge};
@@ -15,7 +15,7 @@ use crate::ui::screens::{
     battery::BatteryScreen, fan::FanScreen, gpu::GpuScreen, home::HomeScreen, profiles::ProfilesScreen, tdp::TdpScreen,
     updates::UpdatesScreen, xg_diag::XgDiagScreen,
 };
-use crate::ui::{theme, AppStore, ScreenCtx};
+use crate::ui::{theme, widgets, AppStore, ScreenCtx};
 
 const DESTINATIONS: [(&str, &str); 8] = [
     ("⏱", "Performance"),
@@ -158,13 +158,7 @@ impl AsusApp {
         let mut clicked = None;
         ui.add_space(12.0);
         for (index, (icon, label)) in DESTINATIONS.iter().enumerate() {
-            let selected = index == self.selected;
-            let color = if selected { theme::ON_SURFACE } else { theme::ON_SURFACE_VARIANT };
-            let button = egui::Button::new(RichText::new(format!("{icon}\n{label}")).color(color).size(13.0))
-                .fill(if selected { theme::PRIMARY_CONTAINER } else { egui::Color32::TRANSPARENT })
-                .corner_radius(16)
-                .min_size(Vec2::new(ui.available_width(), 56.0));
-            if ui.add(button).clicked() {
+            if rail_item(ui, icon, label, index == self.selected).clicked() {
                 clicked = Some(index);
             }
             ui.add_space(4.0);
@@ -173,6 +167,31 @@ impl AsusApp {
             self.select(index);
         }
     }
+}
+
+/// Navigation rail destination: large icon above a single-line label.
+fn rail_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let fill = if selected {
+            theme::PRIMARY_CONTAINER
+        } else if response.hovered() {
+            theme::SURFACE_CONTAINER_HIGH
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        painter.rect_filled(rect, 16, fill);
+        let color = if selected { theme::ON_SURFACE } else { theme::ON_SURFACE_VARIANT };
+        let x = rect.center().x;
+        painter.text(egui::pos2(x, rect.top() + 22.0), Align2::CENTER_CENTER, icon, FontId::proportional(26.0), color);
+        painter.text(egui::pos2(x, rect.bottom() - 14.0), Align2::CENTER_CENTER, label, FontId::proportional(12.0), color);
+        if response.has_focus() {
+            painter.rect_stroke(rect, 16, egui::Stroke::new(2.0, theme::PRIMARY), egui::StrokeKind::Inside);
+        }
+    }
+    response
 }
 
 impl eframe::App for AsusApp {
@@ -226,18 +245,19 @@ impl eframe::App for AsusApp {
                     .id_salt(("screen", self.selected))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_max_width(980.0);
-                        let mut cx = screen_ctx!(self);
-                        match self.selected {
-                            0 => self.hardware.home.ui(ui, &mut cx),
-                            1 => self.hardware.tdp.ui(ui, &mut cx),
-                            2 => self.hardware.gpu.ui(ui, &mut cx),
-                            3 => self.hardware.fan.ui(ui, &mut cx, &curve_commands),
-                            4 => self.hardware.battery.ui(ui, &mut cx),
-                            5 => self.xg_diag.ui(ui, &mut cx),
-                            6 => self.updates.ui(ui, &mut cx),
-                            _ => profile_applied = self.profiles.ui(ui, &mut cx),
-                        }
+                        widgets::container(ui, |ui| {
+                            let mut cx = screen_ctx!(self);
+                            match self.selected {
+                                0 => self.hardware.home.ui(ui, &mut cx),
+                                1 => self.hardware.tdp.ui(ui, &mut cx),
+                                2 => self.hardware.gpu.ui(ui, &mut cx),
+                                3 => self.hardware.fan.ui(ui, &mut cx, &curve_commands),
+                                4 => self.hardware.battery.ui(ui, &mut cx),
+                                5 => self.xg_diag.ui(ui, &mut cx),
+                                6 => self.updates.ui(ui, &mut cx),
+                                _ => profile_applied = self.profiles.ui(ui, &mut cx),
+                            }
+                        });
                     });
             });
         if profile_applied {

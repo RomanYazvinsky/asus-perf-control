@@ -1,8 +1,33 @@
 //! Shared widgets mirroring the former Material 3 components.
 
-use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Response, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{Align, Color32, CornerRadius, FontId, Frame, Layout, Margin, Rect, Response, RichText, Sense, Stroke, Ui, UiBuilder, Vec2};
 
 use super::theme;
+
+/// Bootstrap container breakpoints: (minimum available width, container width).
+const CONTAINER_BREAKPOINTS: [(f32, f32); 5] = [(1400.0, 1320.0), (1200.0, 1140.0), (992.0, 960.0), (768.0, 720.0), (576.0, 540.0)];
+
+/// Width of a Bootstrap-like 12-column container for the given available width.
+pub fn container_width(available: f32) -> f32 {
+    CONTAINER_BREAKPOINTS
+        .iter()
+        .find(|(min, _)| available >= *min)
+        .map_or(available, |(_, width)| *width)
+}
+
+/// Horizontally centered, fixed-width content column (Bootstrap `.container` with a `.col-12` row).
+pub fn container<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    let available = ui.available_width();
+    let width = container_width(available);
+    let cursor = ui.cursor().min;
+    let left = cursor.x + ((available - width) / 2.0).max(0.0);
+    let rect = Rect::from_min_size(egui::pos2(left, cursor.y), Vec2::new(width, f32::INFINITY));
+    ui.scope_builder(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)), |ui| {
+        ui.set_width(width);
+        add_contents(ui)
+    })
+    .inner
+}
 
 /// Material-style card.
 pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
@@ -238,11 +263,15 @@ pub fn profile_tabs(ui: &mut Ui, selected_mode: i32) -> Option<i32> {
             let color = if selected { theme::PRIMARY } else { theme::ON_SURFACE_VARIANT };
             let response = column
                 .vertical_centered(|ui| {
-                    let response = ui.add(
-                        egui::Button::new(RichText::new(format!("{icon}\n{label}")).color(color))
-                            .frame(false)
-                            .min_size(Vec2::new(ui.available_width(), 48.0)),
-                    );
+                    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::click());
+                    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if response.hovered() {
+                        ui.painter().rect_filled(rect, 8, theme::SURFACE_CONTAINER_HIGH);
+                    }
+                    let x = rect.center().x;
+                    let painter = ui.painter();
+                    painter.text(egui::pos2(x, rect.top() + 19.0), egui::Align2::CENTER_CENTER, icon, FontId::proportional(24.0), color);
+                    painter.text(egui::pos2(x, rect.bottom() - 11.0), egui::Align2::CENTER_CENTER, label, FontId::proportional(13.0), color);
                     let line = egui::Rect::from_min_size(
                         egui::pos2(response.rect.left(), response.rect.bottom()),
                         Vec2::new(response.rect.width(), 3.0),
@@ -296,4 +325,19 @@ pub fn outlined_button(ui: &mut Ui, text: &str, enabled: bool) -> Response {
             .corner_radius(CornerRadius::same(20))
             .min_size(Vec2::new(0.0, 36.0)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::container_width;
+
+    #[test]
+    fn container_width_snaps_to_bootstrap_breakpoints() {
+        assert_eq!(container_width(400.0), 400.0);
+        assert_eq!(container_width(600.0), 540.0);
+        assert_eq!(container_width(800.0), 720.0);
+        assert_eq!(container_width(1000.0), 960.0);
+        assert_eq!(container_width(1300.0), 1140.0);
+        assert_eq!(container_width(1800.0), 1320.0);
+    }
 }
