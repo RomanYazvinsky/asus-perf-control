@@ -1,13 +1,14 @@
 use crate::hardware::rog_mkey::{FirmwareBindingGuard, HidMKeyTransport};
 use crate::rog_input::{
-    monitor_device_once, open_input_device, receiver_disconnected, KEY_PROG1, ROG_INPUT_PATH,
-    ROG_SCAN,
+    monitor_device_once, open_input_device, open_native_rog_keyboard, receiver_disconnected,
+    RogInputSource, KEY_PROG1, ROG_INPUT_PATH, ROG_SCAN,
 };
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
 use serde::Serialize;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
@@ -169,6 +170,11 @@ pub enum StartupResolution<H, D, P> {
         device: D,
         reason: String,
     },
+    /// No firmware M-key binding, but the keyboard reports the ROG key natively.
+    NativeReady {
+        device: D,
+        reason: String,
+    },
     InputUnavailable {
         hardware: Option<H>,
         reason: String,
@@ -180,15 +186,19 @@ pub enum StartupResolution<H, D, P> {
     },
 }
 
-pub fn resolve_runtime_startup<H, D, P, Discover, Open, Prepare>(
+/// Startup order: firmware M-key discovery (then WMI input + binding); if the firmware has no
+/// binding, the keyboard's native ROG key; only then the opt-in WMI software fallback.
+pub fn resolve_runtime_startup<H, D, P, Discover, Open, OpenNative, Prepare>(
     fallback_requested: bool,
     discover: Discover,
     open: Open,
+    open_native: OpenNative,
     prepare: Prepare,
 ) -> Result<StartupResolution<H, D, P>>
 where
     Discover: FnOnce() -> Result<H>,
     Open: FnOnce() -> Result<D>,
+    OpenNative: FnOnce() -> Result<D>,
     Prepare: FnOnce(H) -> Result<P>,
 {
     match discover() {
@@ -203,24 +213,34 @@ where
                 fallback_requested: false,
             }),
         },
-        Err(discovery_error) if !fallback_requested => Ok(StartupResolution::Unsupported {
-            reason: format!("failed to discover and probe ROG hardware: {discovery_error:#}"),
-        }),
-        Err(discovery_error) => match open() {
-            Ok(device) => Ok(StartupResolution::FallbackReady {
-                device,
-                reason: format!(
-                    "failed to discover and probe ROG hardware: {discovery_error:#}"
-                ),
-            }),
-            Err(input_error) => Ok(StartupResolution::InputUnavailable {
-                hardware: None,
-                reason: format!(
-                    "failed to discover and probe ROG hardware: {discovery_error:#}; failed to pre-open ROG input device: {input_error:#}"
-                ),
-                fallback_requested: true,
-            }),
-        },
+        Err(discovery_error) => {
+            let discovery =
+                format!("failed to discover and probe ROG hardware: {discovery_error:#}");
+            match open_native() {
+                Ok(device) => Ok(StartupResolution::NativeReady {
+                    device,
+                    reason: format!(
+                        "{discovery}; using the keyboard's native ROG key (KEY_PROG1), no firmware binding needed"
+                    ),
+                }),
+                Err(native_error) if !fallback_requested => Ok(StartupResolution::Unsupported {
+                    reason: format!("{discovery}; no native ROG key input: {native_error:#}"),
+                }),
+                Err(native_error) => match open() {
+                    Ok(device) => Ok(StartupResolution::FallbackReady {
+                        device,
+                        reason: format!("{discovery}; no native ROG key input: {native_error:#}"),
+                    }),
+                    Err(input_error) => Ok(StartupResolution::InputUnavailable {
+                        hardware: None,
+                        reason: format!(
+                            "{discovery}; no native ROG key input: {native_error:#}; failed to pre-open ROG input device: {input_error:#}"
+                        ),
+                        fallback_requested: true,
+                    }),
+                },
+            }
+        }
     }
 }
 
@@ -431,12 +451,22 @@ fn wait_for_shutdown(shutdown: &AtomicBool, duration: Duration) -> bool {
     shutdown.load(Ordering::Acquire)
 }
 
+fn open_source(source: RogInputSource) -> Result<(PathBuf, evdev::Device)> {
+    match source {
+        RogInputSource::AsusWmi => {
+            open_input_device(ROG_INPUT_PATH).map(|device| (PathBuf::from(ROG_INPUT_PATH), device))
+        }
+        RogInputSource::AsusHidKeyboard => open_native_rog_keyboard(),
+    }
+}
+
 fn run_monitor_supervisor(
     shutdown: Arc<AtomicBool>,
     sender: Sender<()>,
     cancellation: UnixStream,
     status: RogHotkeyStatusStore,
-    mut initial_device: Option<evdev::Device>,
+    source: RogInputSource,
+    mut initial_device: Option<(PathBuf, evdev::Device)>,
 ) {
     let mut consecutive_failures = 0_u64;
     let dropped = status.dropped_counter();
@@ -453,19 +483,20 @@ fn run_monitor_supervisor(
             status_for_callback.set_monitor_state("running");
             status_for_callback.set_last_error(None);
         };
-        let result =
-            take_initial_or_open(&mut initial_device, || open_input_device(ROG_INPUT_PATH))
-                .and_then(|device| {
-                    monitor_device_once(
-                        device,
-                        ROG_INPUT_PATH,
-                        sender.clone(),
-                        shutdown.clone(),
-                        dropped.clone(),
-                        &cancellation,
-                        on_open,
-                    )
-                });
+        let result = take_initial_or_open(&mut initial_device, || open_source(source)).and_then(
+            |(path, device)| {
+                monitor_device_once(
+                    device,
+                    source,
+                    path,
+                    sender.clone(),
+                    shutdown.clone(),
+                    dropped.clone(),
+                    &cancellation,
+                    on_open,
+                )
+            },
+        );
 
         if shutdown.load(Ordering::Acquire) {
             break;
@@ -538,7 +569,8 @@ pub fn start(status_store: RogHotkeyStatusStore) -> Result<(RogHotkeyHandle, Rec
                 (transport, layout, identity)
             })
         },
-        || open_input_device(ROG_INPUT_PATH),
+        || open_input_device(ROG_INPUT_PATH).map(|device| (PathBuf::from(ROG_INPUT_PATH), device)),
+        open_native_rog_keyboard,
         |(transport, layout, identity)| {
             let guard = require_prepared(FirmwareBindingGuard::prepare(transport, &layout))?;
             let firmware_changed = guard.changed();
@@ -550,6 +582,7 @@ pub fn start(status_store: RogHotkeyStatusStore) -> Result<(RogHotkeyHandle, Rec
         },
     )?;
 
+    let mut source = RogInputSource::AsusWmi;
     let (initial_device, restorer, status) = match resolution {
         StartupResolution::Unsupported { reason } => {
             (None, None, RogHotkeyStatus::unsupported(reason))
@@ -558,6 +591,20 @@ pub fn start(status_store: RogHotkeyStatusStore) -> Result<(RogHotkeyHandle, Rec
             let mut status = RogHotkeyStatus::unsupported(reason);
             status.fallback_enabled = true;
             status.monitor_state = "starting".to_string();
+            (Some(device), None, status)
+        }
+        StartupResolution::NativeReady { device, reason } => {
+            source = RogInputSource::AsusHidKeyboard;
+            let path = device.0.display().to_string();
+            info!(
+                "ROG key: firmware has no M-key binding; listening for native KEY_PROG1 on {path}"
+            );
+            let mut status = RogHotkeyStatus::supported(
+                format!("ASUS keyboard native KEY_PROG1 at {path}"),
+                false,
+            );
+            status.input_path = path;
+            status.reason = Some(reason);
             (Some(device), None, status)
         }
         StartupResolution::InputUnavailable {
@@ -598,6 +645,7 @@ pub fn start(status_store: RogHotkeyStatusStore) -> Result<(RogHotkeyHandle, Rec
                     sender,
                     cancellation_read,
                     thread_status,
+                    source,
                     initial_device,
                 )
             });

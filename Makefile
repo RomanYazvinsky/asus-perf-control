@@ -91,9 +91,9 @@ build-daemon:
 	@cd rust_daemon && cargo build --release
 	@echo "✓ Daemon built at rust_daemon/target/release/asus-control-daemon"
 
-# Install daemon and rules
-install: build-daemon
-	@echo "Installing daemon and rules..."
+# Install daemon, rules and the desktop application (the ROG hotkey launches it)
+install: build-daemon build-ui
+	@echo "Installing daemon, rules and desktop application..."
 	@cd install && sudo ./install.sh
 
 # Help
@@ -109,6 +109,6 @@ help:
 	@echo "  make package-rpm     - Build Fedora/Bazzite RPM packages"
 	@echo "  make package-arch    - Build Arch/SteamOS pacman packages"
 	@echo "  make package-all     - Build RPM and pacman packages"
-	@echo "  make install         - Build and install daemon + rules"
+	@echo "  make install         - Build and install daemon, rules and desktop app"
 	@echo "  make clean           - Clean all build artifacts"
 	@echo "  make help            - Show this help"

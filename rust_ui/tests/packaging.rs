@@ -306,3 +306,88 @@ fn rebuild_daemon_installs_dbus_and_polkit_files() {
     }
     assert!(!script.contains("GetTdpConfig"));
 }
+
+const SELINUX_MODULE: &str = "install/selinux/asus_control.cil";
+const DAEMON_EXEC_CONTEXT: &str = "(filecon \"/usr/lib/asus-linux-control/asus-control-daemon\" file (system_u object_r asus_control_exec_t";
+
+#[test]
+fn selinux_module_gives_daemon_its_own_domain_with_rog_device_access() {
+    let module = read(SELINUX_MODULE);
+    for needle in [
+        DAEMON_EXEC_CONTEXT,
+        "(filecon \"/var/lib/asus-linux-control(/.*)?\" any (system_u object_r asus_control_var_lib_t",
+        "(typetransition init_t asus_control_exec_t process asus_control_t)",
+        "(allow asus_control_t usb_device_t (chr_file (getattr open read write ioctl lock)))",
+        "(allow asus_control_t event_device_t (chr_file (getattr open read write ioctl lock)))",
+        "(typetransition asus_control_t rpm_exec_t process rpm_t)",
+    ] {
+        assert!(module.contains(needle), "{needle}");
+    }
+    // The generic service domain must not be widened: only asus_control_t gets device access.
+    assert!(!module.contains("(allow init_t usb_device_t"));
+    assert!(!module.contains("(allow init_t event_device_t"));
+
+    let unit = read("install/systemd/asus-control-daemon.service");
+    assert!(unit.contains("ExecStart=/usr/lib/asus-linux-control/asus-control-daemon"));
+}
+
+#[test]
+fn rpm_daemon_package_loads_and_removes_selinux_module() {
+    let spec = read(SPEC);
+    let daemon_files = section(&spec, "%files daemon", None);
+    assert!(daemon_files.contains("%{_datadir}/selinux/packages/%{selinuxtype}/asus_control.cil"));
+    for needle in [
+        "install -Dm0644 install/selinux/asus_control.cil",
+        "%selinux_relabel_pre -s %{selinuxtype}",
+        "%selinux_modules_install -s %{selinuxtype} %{_datadir}/selinux/packages/%{selinuxtype}/asus_control.cil",
+        "%selinux_modules_uninstall -s %{selinuxtype} asus_control",
+        "%selinux_relabel_post -s %{selinuxtype}",
+    ] {
+        assert!(spec.contains(needle), "{needle}");
+    }
+    // Relabel happens after the files are on disk, then a running daemon moves into its domain.
+    let posttrans = section(&spec, "%posttrans daemon", Some("%preun daemon"));
+    let relabel = posttrans.find("%selinux_relabel_post").expect("relabel");
+    let restart = posttrans.find("try-restart asus-control-daemon.service").expect("restart");
+    assert!(relabel < restart);
+}
+
+#[test]
+fn direct_installers_load_selinux_module_and_restore_labels_before_start() {
+    // (script, marker of the SELinux step, marker of the daemon binary install)
+    for (path, selinux_step, binary_step) in [
+        ("install/install.sh", "\ninstall_selinux_policy\n", "install_binary_atomically \"$DAEMON_BINARY\""),
+        ("install/rebuild-daemon.sh", "semodule -i selinux/asus_control.cil", "asus-control-daemon.new"),
+    ] {
+        let script = read(path);
+        assert!(script.contains("semodule -i"), "{path}: semodule");
+        assert!(script.contains("selinux/asus_control.cil"), "{path}: module path");
+        assert!(script.contains("restorecon -RF"), "{path}: restorecon");
+        let binary = script.rfind(binary_step).unwrap_or_else(|| panic!("{path}: binary install"));
+        let selinux = script.find(selinux_step).unwrap_or_else(|| panic!("{path}: SELinux step"));
+        let start = script
+            .find("systemctl enable --now asus-control-daemon.service")
+            .unwrap_or_else(|| panic!("{path}: daemon start"));
+        assert!(binary < selinux && selinux < start, "{path}: order");
+    }
+}
+
+#[test]
+fn root_installer_installs_desktop_app_launched_by_hotkey_agent() {
+    // The agent runs `gtk-launch asus-linux-control`, which needs the binary and desktop entry.
+    let installer = read("install/install.sh");
+    for needle in [
+        "build_release_bins \"$UI_SOURCE/Cargo.toml\"",
+        "install_binary_atomically \"$UI_BINARY\" /usr/bin/asus-linux-control",
+        "/usr/share/applications/asus-linux-control.desktop",
+        "/usr/share/icons/hicolor/256x256/apps/asus-linux-control.png",
+        "/usr/share/metainfo/asus-linux-control.metainfo.xml",
+    ] {
+        assert!(installer.contains(needle), "{needle}");
+    }
+    assert!(read("rust_daemon/src/hotkey_agent.rs").contains("\"gtk-launch\""));
+    assert!(read("packaging/linux/asus-linux-control.desktop").contains("Exec=asus-linux-control"));
+
+    let makefile = read("Makefile");
+    assert!(makefile.contains("install: build-daemon build-ui"));
+}

@@ -53,14 +53,20 @@ echo -e "${YELLOW}Checking for Rust daemon...${NC}"
 DAEMON_SOURCE="$PROJECT_ROOT/rust_daemon"
 DAEMON_BINARY="$DAEMON_SOURCE/target/release/asus-control-daemon"
 AGENT_BINARY="$DAEMON_SOURCE/target/release/asus-control-hotkey-agent"
+UI_SOURCE="$PROJECT_ROOT/rust_ui"
+UI_BINARY="$UI_SOURCE/target/release/asus-linux-control"
+PACKAGING_LINUX_DIR="$PROJECT_ROOT/packaging/linux"
 
 print_prebuild_help() {
     echo -e "${RED}Unable to find a usable Rust toolchain for the regular user.${NC}"
     echo "Build the release binaries as your regular user, then rerun this installer:"
     echo "  cd '$DAEMON_SOURCE' && cargo build --release --bins"
+    echo "  cd '$UI_SOURCE' && cargo build --release --bins"
 }
 
+# Builds the release binaries of one crate (default: rust_daemon) as the invoking user.
 build_release_bins() {
+    local MANIFEST="${1:-$DAEMON_SOURCE/Cargo.toml}"
     local BUILD_HOME BUILD_PATH CARGO_BIN
 
     if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = "root" ]; then
@@ -90,17 +96,41 @@ build_release_bins() {
 
     runuser -u "$SUDO_USER" -- env \
         HOME="$BUILD_HOME" USER="$SUDO_USER" LOGNAME="$SUDO_USER" PATH="$BUILD_PATH" \
-        "$CARGO_BIN" build --release --bins --manifest-path "$DAEMON_SOURCE/Cargo.toml"
+        "$CARGO_BIN" build --release --bins --manifest-path "$MANIFEST"
 }
 
 install_binary_atomically() {
     local source="$1"
     local destination="$2"
     local temporary
-    temporary="$(mktemp "$DAEMON_DEST/.${destination##*/}.tmp.XXXXXX")"
+    temporary="$(mktemp "${destination%/*}/.${destination##*/}.tmp.XXXXXX")"
     TEMP_INSTALLS+=("$temporary")
     install -m 0755 "$source" "$temporary"
     mv -f "$temporary" "$destination"
+}
+
+# On SELinux systems the daemon needs its own domain (asus_control_t); in the generic init_t
+# domain it may not open the ROG keyboard hidraw/input devices. Installing a binary through a
+# temporary file resets its label, so labels are restored on every install.
+install_selinux_policy() {
+    if ! command -v selinuxenabled > /dev/null 2>&1 || ! selinuxenabled; then
+        return 0
+    fi
+    echo ""
+    echo -e "${YELLOW}Installing SELinux policy module...${NC}"
+    if ! command -v semodule > /dev/null 2>&1 || ! command -v restorecon > /dev/null 2>&1; then
+        echo -e "${RED}Warning: semodule/restorecon not found; the ROG/M4 key will not work under SELinux${NC}"
+        return 0
+    fi
+    if ! semodule -i "$SCRIPT_DIR/selinux/asus_control.cil"; then
+        echo -e "${RED}Warning: failed to load the SELinux module; the ROG/M4 key will not work${NC}"
+        return 0
+    fi
+    restorecon -RF "$DAEMON_DEST"
+    if [ -d /var/lib/asus-linux-control ]; then
+        restorecon -RF /var/lib/asus-linux-control
+    fi
+    echo -e "${GREEN}✓ SELinux module asus_control loaded and labels restored${NC}"
 }
 
 if [ ! -f "$DAEMON_BINARY" ] || [ ! -f "$AGENT_BINARY" ]; then
@@ -121,6 +151,17 @@ if [ ! -f "$DAEMON_BINARY" ] || [ ! -f "$AGENT_BINARY" ]; then
     echo -e "${GREEN}✓ Daemon compiled successfully${NC}"
 else
     echo -e "${GREEN}✓ Using pre-built daemon${NC}"
+fi
+
+if [ ! -f "$UI_BINARY" ]; then
+    echo -e "${YELLOW}Desktop application not found. Building...${NC}"
+    build_release_bins "$UI_SOURCE/Cargo.toml" || {
+        echo -e "${RED}Failed to build the desktop application${NC}"
+        exit 1
+    }
+    echo -e "${GREEN}✓ Desktop application compiled successfully${NC}"
+else
+    echo -e "${GREEN}✓ Using pre-built desktop application${NC}"
 fi
 
 # Install D-Bus daemon
@@ -157,6 +198,27 @@ else
     echo -e "${RED}Error: Compiled hotkey agent binary not found${NC}"
     exit 1
 fi
+
+install_selinux_policy
+
+# Install the desktop application. The ROG hotkey agent starts it with
+# `gtk-launch asus-linux-control`, which only works when the desktop entry is installed.
+echo ""
+echo -e "${YELLOW}Installing desktop application...${NC}"
+install_binary_atomically "$UI_BINARY" /usr/bin/asus-linux-control
+install -D -m 0644 "$PACKAGING_LINUX_DIR/asus-linux-control.desktop" \
+    /usr/share/applications/asus-linux-control.desktop
+install -D -m 0644 "$PACKAGING_LINUX_DIR/asus-linux-control.png" \
+    /usr/share/icons/hicolor/256x256/apps/asus-linux-control.png
+install -D -m 0644 "$PACKAGING_LINUX_DIR/asus-linux-control.metainfo.xml" \
+    /usr/share/metainfo/asus-linux-control.metainfo.xml
+if command -v update-desktop-database > /dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache > /dev/null 2>&1; then
+    gtk-update-icon-cache -q -t /usr/share/icons/hicolor || true
+fi
+echo -e "${GREEN}✓ Desktop application installed to /usr/bin/asus-linux-control${NC}"
 
 # Install D-Bus service file
 if [ -f "$DBUS_DIR/com.asuslinuxcontrol.Daemon.service" ]; then

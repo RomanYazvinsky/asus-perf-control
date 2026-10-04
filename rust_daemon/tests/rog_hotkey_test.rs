@@ -50,50 +50,35 @@ fn rog_runtime_requires_exact_explicit_opt_in() {
     assert!(!hotkey_enabled(Some("0")));
 }
 
-#[test]
-fn unsupported_without_fallback_never_opens_input_or_prepares() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let discover_calls = calls.clone();
-    let open_calls = calls.clone();
-    let prepare_calls = calls.clone();
+type Calls = Arc<Mutex<Vec<&'static str>>>;
 
-    let resolution = resolve_runtime_startup::<(), _, (), _, _, _>(
-        false,
-        move || {
-            discover_calls.lock().unwrap().push("discover");
-            Err(anyhow!("unsupported firmware"))
-        },
-        move || {
-            open_calls.lock().unwrap().push("open");
-            Ok::<_, anyhow::Error>("device")
-        },
-        move |_| {
-            prepare_calls.lock().unwrap().push("prepare");
-            Ok(())
-        },
-    )
-    .unwrap();
-
-    assert!(matches!(resolution, StartupResolution::Unsupported { .. }));
-    assert_eq!(*calls.lock().unwrap(), vec!["discover"]);
-}
-
-#[test]
-fn supported_input_open_failure_is_nonfatal_and_never_prepares() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let discover_calls = calls.clone();
-    let open_calls = calls.clone();
-    let prepare_calls = calls.clone();
+/// Runs startup resolution with recording fakes for every step.
+fn resolve_with(
+    fallback_requested: bool,
+    discover: Result<&'static str, &'static str>,
+    open: Result<&'static str, &'static str>,
+    open_native: Result<&'static str, &'static str>,
+) -> (
+    StartupResolution<&'static str, &'static str, &'static str>,
+    Vec<&'static str>,
+) {
+    let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+    let (discover_calls, open_calls, native_calls, prepare_calls) =
+        (calls.clone(), calls.clone(), calls.clone(), calls.clone());
 
     let resolution = resolve_runtime_startup(
-        false,
+        fallback_requested,
         move || {
             discover_calls.lock().unwrap().push("discover");
-            Ok("supported-hardware")
+            discover.map_err(|e| anyhow!(e))
         },
         move || {
             open_calls.lock().unwrap().push("open");
-            Err::<(), _>(anyhow!("input unavailable"))
+            open.map_err(|e| anyhow!(e))
+        },
+        move || {
+            native_calls.lock().unwrap().push("native");
+            open_native.map_err(|e| anyhow!(e))
         },
         move |_| {
             prepare_calls.lock().unwrap().push("prepare");
@@ -101,6 +86,79 @@ fn supported_input_open_failure_is_nonfatal_and_never_prepares() {
         },
     )
     .unwrap();
+
+    let calls = calls.lock().unwrap().clone();
+    (resolution, calls)
+}
+
+#[test]
+fn unsupported_without_native_key_or_fallback_never_opens_wmi_input_or_prepares() {
+    let (resolution, calls) = resolve_with(
+        false,
+        Err("unsupported firmware"),
+        Ok("device"),
+        Err("no ASUS keyboard reporting KEY_PROG1"),
+    );
+
+    match resolution {
+        StartupResolution::Unsupported { reason } => {
+            assert!(reason.contains("unsupported firmware"), "{reason}");
+            assert!(
+                reason.contains("no ASUS keyboard reporting KEY_PROG1"),
+                "{reason}"
+            );
+        }
+        _ => panic!("expected Unsupported"),
+    }
+    assert_eq!(calls, vec!["discover", "native"]);
+}
+
+#[test]
+fn native_keyboard_key_is_used_when_firmware_probe_fails_without_prepare() {
+    let (resolution, calls) = resolve_with(
+        false,
+        Err("invalid M-key slot count: 0"),
+        Ok("wmi-device"),
+        Ok("keyboard-device"),
+    );
+
+    match resolution {
+        StartupResolution::NativeReady { device, reason } => {
+            assert_eq!(device, "keyboard-device");
+            assert!(reason.contains("invalid M-key slot count: 0"), "{reason}");
+        }
+        _ => panic!("expected NativeReady"),
+    }
+    assert_eq!(calls, vec!["discover", "native"]);
+}
+
+#[test]
+fn native_keyboard_key_takes_precedence_over_opt_in_fallback() {
+    let (resolution, calls) = resolve_with(
+        true,
+        Err("unsupported firmware"),
+        Ok("wmi-device"),
+        Ok("keyboard-device"),
+    );
+
+    assert!(matches!(
+        resolution,
+        StartupResolution::NativeReady {
+            device: "keyboard-device",
+            ..
+        }
+    ));
+    assert_eq!(calls, vec!["discover", "native"]);
+}
+
+#[test]
+fn supported_input_open_failure_is_nonfatal_and_never_prepares() {
+    let (resolution, calls) = resolve_with(
+        false,
+        Ok("supported-hardware"),
+        Err("input unavailable"),
+        Ok("keyboard"),
+    );
 
     assert!(matches!(
         resolution,
@@ -109,32 +167,17 @@ fn supported_input_open_failure_is_nonfatal_and_never_prepares() {
             ..
         }
     ));
-    assert_eq!(*calls.lock().unwrap(), vec!["discover", "open"]);
+    assert_eq!(calls, vec!["discover", "open"]);
 }
 
 #[test]
 fn unsupported_with_fallback_opens_input_without_prepare() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let discover_calls = calls.clone();
-    let open_calls = calls.clone();
-    let prepare_calls = calls.clone();
-
-    let resolution = resolve_runtime_startup::<(), _, (), _, _, _>(
+    let (resolution, calls) = resolve_with(
         true,
-        move || {
-            discover_calls.lock().unwrap().push("discover");
-            Err(anyhow!("unsupported firmware"))
-        },
-        move || {
-            open_calls.lock().unwrap().push("open");
-            Ok::<_, anyhow::Error>("fallback-device")
-        },
-        move |_| {
-            prepare_calls.lock().unwrap().push("prepare");
-            Ok(())
-        },
-    )
-    .unwrap();
+        Err("unsupported firmware"),
+        Ok("fallback-device"),
+        Err("no native key"),
+    );
 
     assert!(matches!(
         resolution,
@@ -143,32 +186,12 @@ fn unsupported_with_fallback_opens_input_without_prepare() {
             ..
         }
     ));
-    assert_eq!(*calls.lock().unwrap(), vec!["discover", "open"]);
+    assert_eq!(calls, vec!["discover", "native", "open"]);
 }
 
 #[test]
-fn supported_startup_orders_discovery_open_then_prepare() {
-    let calls = Arc::new(Mutex::new(Vec::new()));
-    let discover_calls = calls.clone();
-    let open_calls = calls.clone();
-    let prepare_calls = calls.clone();
-
-    let resolution = resolve_runtime_startup(
-        false,
-        move || {
-            discover_calls.lock().unwrap().push("discover");
-            Ok("hardware")
-        },
-        move || {
-            open_calls.lock().unwrap().push("open");
-            Ok::<_, anyhow::Error>("device")
-        },
-        move |_| {
-            prepare_calls.lock().unwrap().push("prepare");
-            Ok::<_, anyhow::Error>("guard")
-        },
-    )
-    .unwrap();
+fn supported_startup_orders_discovery_open_then_prepare_and_skips_native() {
+    let (resolution, calls) = resolve_with(false, Ok("hardware"), Ok("device"), Ok("keyboard"));
 
     assert!(matches!(
         resolution,
@@ -177,7 +200,7 @@ fn supported_startup_orders_discovery_open_then_prepare() {
             prepared: "guard"
         }
     ));
-    assert_eq!(*calls.lock().unwrap(), vec!["discover", "open", "prepare"]);
+    assert_eq!(calls, vec!["discover", "open", "prepare"]);
 }
 
 #[test]
@@ -203,11 +226,13 @@ fn disabled_runtime_gate_precedes_input_and_hid_access() {
     let enabled_gate = source.find("if !hotkey_enabled").unwrap();
     let hid_probe = source.find("HidMKeyTransport::discover_and_probe").unwrap();
     let input_open = source.rfind("open_input_device(ROG_INPUT_PATH)").unwrap();
+    let native_open = source.rfind("open_native_rog_keyboard").unwrap();
     let firmware_prepare = source.rfind("FirmwareBindingGuard::prepare").unwrap();
 
     assert!(enabled_gate < hid_probe);
     assert!(hid_probe < input_open);
-    assert!(input_open < firmware_prepare);
+    assert!(input_open < native_open);
+    assert!(native_open < firmware_prepare);
 }
 
 #[test]

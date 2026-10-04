@@ -8,9 +8,12 @@ URL:            https://github.com/asus-linux-control/asus-linux-control
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  systemd
+# Provides the %selinux_* scriptlet macros.
+BuildRequires:  selinux-policy
 %{?systemd_requires}
 
 %global debug_package %{nil}
+%global selinuxtype targeted
 
 Requires: asus-linux-control-gui = %{version}-%{release}
 Requires: asus-linux-control-daemon = %{version}-%{release}
@@ -37,6 +40,10 @@ Native Rust (egui) desktop application for ASUS Linux Control.
 %package daemon
 Summary:        ASUS Linux Control privileged system daemon
 Requires(post): systemd
+# SELinux module: confined asus_control_t domain with access to the ROG keyboard devices.
+Requires(post): selinux-policy-%{selinuxtype}
+Requires(post): policycoreutils
+Requires(post): libselinux-utils
 Requires(preun): systemd
 Requires(postun): systemd
 
@@ -93,16 +100,29 @@ install -Dm0644 install/dbus/com.asuslinuxcontrol.Daemon.policy \
   %{buildroot}/usr/share/polkit-1/actions/com.asuslinuxcontrol.Daemon.policy
 install -Dm0644 install/99-asus-control.rules \
   %{buildroot}/usr/lib/udev/rules.d/99-asus-control.rules
+install -Dm0644 install/selinux/asus_control.cil \
+  %{buildroot}%{_datadir}/selinux/packages/%{selinuxtype}/asus_control.cil
+
+%pre daemon
+%selinux_relabel_pre -s %{selinuxtype}
 
 %post daemon
+%selinux_modules_install -s %{selinuxtype} %{_datadir}/selinux/packages/%{selinuxtype}/asus_control.cil
 %systemd_post asus-control-daemon.service
 echo "Run 'sudo systemctl enable --now asus-control-daemon.service' to start ASUS Linux Control at boot."
+
+%posttrans daemon
+# Files are labelled with the policy loaded at unpack time; fix them up now that the module is
+# loaded, then move an already running daemon from init_t into asus_control_t.
+%selinux_relabel_post -s %{selinuxtype}
+systemctl try-restart asus-control-daemon.service >/dev/null 2>&1 || :
 
 %preun daemon
 %systemd_preun asus-control-daemon.service
 
 %postun daemon
 %systemd_postun_with_restart asus-control-daemon.service
+%selinux_modules_uninstall -s %{selinuxtype} asus_control
 
 %post gui
 %systemd_user_post asus-control-hotkey-agent.service
@@ -137,8 +157,12 @@ systemctl try-restart asus-control-daemon.service >/dev/null 2>&1 || :
 /usr/share/dbus-1/system.d/com.asuslinuxcontrol.Daemon.conf
 /usr/share/polkit-1/actions/com.asuslinuxcontrol.Daemon.policy
 /usr/lib/udev/rules.d/99-asus-control.rules
+%{_datadir}/selinux/packages/%{selinuxtype}/asus_control.cil
 
 %changelog
+* Sun Oct 04 2026 ASUS Linux Control <maintainers@example.invalid> - 0.0.1-1
+- Ship an SELinux module so the daemon can drive the ROG/M4 key under enforcing mode.
+
 * Sat Oct 03 2026 ASUS Linux Control <maintainers@example.invalid> - 0.0.1-1
 - Replace the Flutter GUI with a native Rust (egui) binary.
 

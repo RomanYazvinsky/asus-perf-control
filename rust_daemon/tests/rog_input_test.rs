@@ -4,13 +4,14 @@
 mod rog_input;
 
 use rog_input::{
-    monitor_once, receiver_disconnected, try_emit_press, wait_for_input_or_cancel, RawInputEvent,
-    RogEventMatcher, WaitOutcome, EV_KEY, EV_MSC, EV_SYN, KEY_PROG1, KEY_UNKNOWN, MSC_SCAN,
-    ROG_INPUT_PATH, ROG_SCAN, SYN_REPORT,
+    find_native_rog_keyboard, monitor_once, receiver_disconnected, try_emit_press,
+    wait_for_input_or_cancel, RawInputEvent, RogEventMatcher, RogInputSource, WaitOutcome, EV_KEY,
+    EV_MSC, EV_SYN, KEY_PROG1, KEY_UNKNOWN, MSC_SCAN, NATIVE_ROG_SCAN, ROG_INPUT_PATH, ROG_SCAN,
+    SYN_REPORT,
 };
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
@@ -202,4 +203,144 @@ fn monitor_once_accepts_interruptible_bounded_contract(
     cancel: &UnixStream,
 ) {
     let _ = monitor_once(path, sender, shutdown, dropped, cancel, || {});
+}
+
+fn keyboard_matcher() -> RogEventMatcher {
+    RogEventMatcher::for_source(RogInputSource::AsusHidKeyboard, Duration::from_millis(300))
+}
+
+#[test]
+fn native_scan_value_is_the_asus_vendor_usage() {
+    // HID usage page 0xff31, usage 0x38, as the kernel reports it in a signed MSC_SCAN value.
+    assert_eq!(NATIVE_ROG_SCAN as u32, 0xff31_0038);
+}
+
+#[test]
+fn keyboard_rog_scan_followed_by_key_prog1_press_is_accepted() {
+    let now = Instant::now();
+    let mut matcher = keyboard_matcher();
+
+    assert!(!matcher.accept(RawInputEvent::new(EV_MSC, MSC_SCAN, NATIVE_ROG_SCAN), now));
+    assert!(matcher.accept(RawInputEvent::new(EV_KEY, KEY_PROG1, 1), now));
+}
+
+#[test]
+fn keyboard_key_prog1_without_rog_scan_is_ignored() {
+    let mut matcher = keyboard_matcher();
+
+    assert!(!matcher.accept(RawInputEvent::new(EV_KEY, KEY_PROG1, 1), Instant::now()));
+}
+
+#[test]
+fn keyboard_rog_scan_followed_by_another_key_is_ignored() {
+    let now = Instant::now();
+    let mut matcher = keyboard_matcher();
+
+    assert!(!matcher.accept(RawInputEvent::new(EV_MSC, MSC_SCAN, NATIVE_ROG_SCAN), now));
+    assert!(!matcher.accept(RawInputEvent::new(EV_KEY, 30, 1), now));
+}
+
+#[test]
+fn keyboard_ignores_the_wmi_scan_code() {
+    let now = Instant::now();
+    let mut matcher = keyboard_matcher();
+
+    assert!(!matcher.accept(RawInputEvent::new(EV_MSC, MSC_SCAN, ROG_SCAN), now));
+    assert!(!matcher.accept(RawInputEvent::new(EV_KEY, KEY_UNKNOWN, 1), now));
+    assert!(!matcher.accept(RawInputEvent::new(EV_MSC, MSC_SCAN, ROG_SCAN), now));
+    assert!(!matcher.accept(RawInputEvent::new(EV_KEY, KEY_PROG1, 1), now));
+}
+
+#[test]
+fn keyboard_release_and_repeat_are_ignored_and_presses_debounced() {
+    let now = Instant::now();
+    let mut matcher = keyboard_matcher();
+    let scan = RawInputEvent::new(EV_MSC, MSC_SCAN, NATIVE_ROG_SCAN);
+
+    assert!(!matcher.accept(scan, now));
+    assert!(!matcher.accept(RawInputEvent::new(EV_KEY, KEY_PROG1, 0), now));
+    assert!(!matcher.accept(scan, now));
+    assert!(!matcher.accept(RawInputEvent::new(EV_KEY, KEY_PROG1, 2), now));
+    assert!(!matcher.accept(scan, now));
+    assert!(matcher.accept(RawInputEvent::new(EV_KEY, KEY_PROG1, 1), now));
+    assert!(!matcher.accept(scan, now + Duration::from_millis(50)));
+    assert!(!matcher.accept(
+        RawInputEvent::new(EV_KEY, KEY_PROG1, 1),
+        now + Duration::from_millis(50)
+    ));
+}
+
+/// Fake /sys/class/input tree; `key` is the capabilities/key bitmap as the kernel prints it.
+struct FakeInput {
+    root: PathBuf,
+}
+
+impl FakeInput {
+    fn new(name: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "asus-control-daemon-rog-input-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        Self { root }
+    }
+
+    fn device(&self, event: &str, vendor: &str, bustype: &str, key: &str) -> &Self {
+        let device = self.root.join(event).join("device");
+        std::fs::create_dir_all(device.join("id")).unwrap();
+        std::fs::create_dir_all(device.join("capabilities")).unwrap();
+        std::fs::write(device.join("id/vendor"), format!("{vendor}\n")).unwrap();
+        std::fs::write(device.join("id/bustype"), format!("{bustype}\n")).unwrap();
+        std::fs::write(device.join("capabilities/key"), format!("{key}\n")).unwrap();
+        self
+    }
+
+    fn find(&self) -> anyhow::Result<PathBuf> {
+        find_native_rog_keyboard(&self.root, Path::new("/dev/input"))
+    }
+}
+
+impl Drop for FakeInput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+// Bitmaps captured from a ROG Flow X13 GV301QH: event5 reports KEY_PROG1 (bit 148), event7 not.
+const GV301_KEYBOARD_KEYS: &str = "733eff 0 20000 483ffff17aff32d bfd4444600000000 1 1b30c730b17cc00 9fa67bfad9715fed 9e168000004400 10000002";
+const GV301_CONSUMER_KEYS: &str =
+    "1000000000007 ff9f207ac14057ff febeffdfffefffff fffffffffffffffe";
+
+#[test]
+fn native_keyboard_discovery_picks_the_asus_usb_device_with_key_prog1() {
+    let input = FakeInput::new("gv301");
+    input
+        .device("event4", "0000", "0019", GV301_KEYBOARD_KEYS)
+        .device("event5", "0b05", "0003", GV301_KEYBOARD_KEYS)
+        .device("event7", "0b05", "0003", GV301_CONSUMER_KEYS)
+        .device("event12", "046d", "0003", GV301_KEYBOARD_KEYS);
+
+    assert_eq!(input.find().unwrap(), PathBuf::from("/dev/input/event5"));
+}
+
+#[test]
+fn native_keyboard_discovery_prefers_the_lowest_event_number() {
+    let input = FakeInput::new("order");
+    input
+        .device("event11", "0b05", "0003", GV301_KEYBOARD_KEYS)
+        .device("event9", "0b05", "0003", GV301_KEYBOARD_KEYS);
+
+    assert_eq!(input.find().unwrap(), PathBuf::from("/dev/input/event9"));
+}
+
+#[test]
+fn native_keyboard_discovery_fails_without_a_matching_device() {
+    let input = FakeInput::new("none");
+    input
+        .device("event4", "0000", "0019", GV301_KEYBOARD_KEYS)
+        .device("event7", "0b05", "0003", GV301_CONSUMER_KEYS);
+
+    let error = input.find().unwrap_err().to_string();
+    assert!(error.contains("KEY_PROG1"), "{error}");
 }

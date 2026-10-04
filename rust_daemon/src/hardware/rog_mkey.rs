@@ -97,6 +97,7 @@ impl<T: MKeyTransport> FirmwareBindingGuard<T> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn transport(&self) -> &T {
         &self.transport
     }

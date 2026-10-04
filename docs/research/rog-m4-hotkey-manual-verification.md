@@ -6,6 +6,27 @@ G-Helper by seerge: https://github.com/seerge/g-helper/pull/5691
 Run these checks on supported ASUS hardware after installing and starting the
 system daemon and the per-user hotkey agent.
 
+## Input sources
+
+The daemon picks the first source that works, in this order:
+
+1. **Firmware M-key binding** (newer models, G-Helper protocol): the daemon
+   rebinds the ROG slot over hidraw and listens on
+   `/dev/input/by-path/platform-asus-nb-wmi-event` for scan `0x38`. The original
+   binding is restored on shutdown.
+2. **Native keyboard key** (older models whose firmware reports
+   `invalid M-key slot count: 0`, e.g. ROG Flow X13 GV301QH): the ASUS USB
+   keyboard ("N-KEY Device") already sends `KEY_PROG1` with HID scan
+   `0xff310038`. The daemon finds that input device through sysfs (vendor
+   `0b05`, USB bus, `KEY_PROG1` capability), accepts only that exact
+   scan + key pair, and changes no firmware state. `GetRogHotkeyStatus`
+   reports `hardwareSupported: true`, `firmwareChanged: false` and the
+   `/dev/input/eventN` path as `inputPath`.
+3. **Opt-in software fallback** (`ASUS_ROG_HOTKEY_SOFTWARE_FALLBACK=1`, see step 7).
+
+To see which events a model sends, watch the input devices while pressing the
+key (user must be in the `input` group), for example with `evtest`.
+
 1. Inspect capability without pressing the key. Run:
 
    ```bash

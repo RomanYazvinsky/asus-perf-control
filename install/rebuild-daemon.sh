@@ -36,6 +36,16 @@ install -m 755 ../rust_daemon/target/release/asus-control-daemon \
 mv -f /usr/lib/asus-linux-control/asus-control-daemon.new \
     /usr/lib/asus-linux-control/asus-control-daemon
 
+# SELinux: keep the daemon in its own domain (the copy above reset the binary label)
+if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+    echo "   Updating SELinux module and labels..."
+    semodule -i selinux/asus_control.cil
+    restorecon -RF /usr/lib/asus-linux-control
+    if [ -d /var/lib/asus-linux-control ]; then
+        restorecon -RF /var/lib/asus-linux-control
+    fi
+fi
+
 # Copy integration files (in case D-Bus or polkit methods changed)
 echo "   Updating D-Bus service file..."
 install -m 644 dbus/com.asuslinuxcontrol.Daemon.service /usr/share/dbus-1/system-services/com.asuslinuxcontrol.Daemon.service

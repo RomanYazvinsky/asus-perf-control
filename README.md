@@ -59,7 +59,8 @@ Detailed per-feature call routes: [`docs/app-function-interactions.md`](docs/app
 ### From source (development)
 
 ```bash
-# 1. Build and install the privileged daemon, D-Bus/Polkit policy and udev rules.
+# 1. Build and install the privileged daemon, D-Bus/Polkit/udev/SELinux files and the
+#    desktop app (/usr/bin/asus-linux-control + menu entry, which the ROG/M4 key launches).
 #    Needed once, and again after every change in rust_daemon/.
 make install
 #    After the very first install, log out and back in (plugdev group membership).
@@ -97,7 +98,7 @@ The daemon is D-Bus activated, so it does not need to be started manually.
 | `make run` | Build (release) and run the UI |
 | `make debug` | Debug build of the UI with `RUST_LOG=debug` |
 | `make test` | Run tests of `rust_core`, `rust_ui` and `rust_daemon` |
-| `make install` | Build `rust_daemon` and install it with D-Bus/Polkit/udev/systemd files |
+| `make install` | Build daemon + UI and install them with D-Bus/Polkit/udev/systemd/SELinux files and the desktop entry |
 | `make build-ui` | Build only the UI → `rust_ui/target/release/asus-linux-control` |
 | `make build-daemon` | Build only the daemon → `rust_daemon/target/release/asus-control-daemon` |
 | `make package-rpm` | Fedora/Bazzite RPMs → `dist/rpmbuild/RPMS/`, `dist/rpmbuild/SRPMS/` |
@@ -182,7 +183,7 @@ settings keep working.
 │       └── ui/             # screens, widgets, fan curve editor
 ├── rust_core/      # read-only sysfs helpers used by the UI
 ├── rust_daemon/    # privileged D-Bus daemon + hotkey agent
-├── install/        # install.sh, D-Bus/Polkit/udev/systemd files
+├── install/        # install.sh, D-Bus/Polkit/udev/systemd files, SELinux module
 ├── packaging/      # RPM spec, PKGBUILD, .desktop, metainfo, icon
 ├── docs/           # architecture notes, versioning, hardware research
 └── Makefile
@@ -226,6 +227,17 @@ lsmod | grep asus
 ls -la /sys/class/platform/asus-nb-wmi/
 sudo modprobe asus-nb-wmi
 ```
+
+**SELinux alert: "SELinux is preventing asus-control-da …"**
+
+The daemon needs the `asus_control` SELinux module (loaded by `make install` and the RPM).
+Check that it runs in its own domain:
+
+```bash
+ps -eZ | grep asus-control-da          # expect asus_control_t, not init_t
+```
+
+If it shows `init_t`, rerun `make install`. Details: [`install/README.md`](install/README.md#selinux-fedora-bazzite).
 
 **Daemon errors**
 
