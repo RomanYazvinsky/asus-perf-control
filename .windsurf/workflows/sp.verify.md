@@ -39,17 +39,17 @@ UNVERIFIED CODE IS NOT COMPLETE CODE
 **How:**
 ```bash
 # Run specific test
-flutter test test/specific_test.dart
+cd rust_ui && cargo test features::tdp
 
-# Run with coverage
-flutter test --coverage
+# Run with coverage (cargo-llvm-cov)
+cd rust_ui && cargo llvm-cov
 
 # Check coverage report - new code should be covered
 ```
 
 ### Level 2: Integration Verification
 
-**Required for:** Multi-component changes, FFI boundaries, API changes
+**Required for:** Multi-component changes, D-Bus contract changes, API changes
 
 **Verify:**
 - [ ] Components integrate correctly
@@ -59,8 +59,9 @@ flutter test --coverage
 
 **How:**
 ```bash
-# Run integration tests
-flutter test integration_test/
+# Run integration tests (packaging + daemon contracts)
+cd rust_ui && cargo test --test packaging
+cd rust_daemon && cargo test
 
 # Or manual verification script
 ./scripts/verify-integration.sh
@@ -78,8 +79,8 @@ flutter test integration_test/
 
 **How:**
 ```bash
-# Run app locally
-flutter run
+# Run app locally with D-Bus tracing
+make debug
 
 # Test specific scenarios
 # Document steps taken
@@ -145,8 +146,8 @@ flutter run
 ### Task 3: Implement TDP Write
 
 **Verification:**
-- [x] Unit test: `writeTdp(35)` → verifies FFI call
-- [x] Integration: TdpService → TdpBloc → UI roundtrip
+- [x] Unit test: `set_tdp(35)` against a fake `TdpService` → verifies saved settings
+- [x] Integration: `features::tdp` → `Services` → asusd roundtrip (`make debug` trace)
 - [x] Manual: Set TDP to 35W in UI, verified via `cat /sys/class/powercap/...`
 - [x] Safety: Attempted 0W, 200W - both rejected with errors
 ```
@@ -181,30 +182,24 @@ If user indicates they want to verify something, guide them through appropriate 
 
 ## Quick Verification Commands
 
-**This project (Flutter + Rust):**
+**This project (Rust UI + Rust daemon):**
 
 ```bash
-# Unit tests
-cd rust_core && cargo test
-cd .. && flutter test
-
-# Integration (requires daemon)
-flutter test integration_test/
+# Unit + integration tests of all crates
+make test
 
 # Manual (full stack)
-cd rust_core && cargo build --release
-cd rust_daemon && cargo build --release && sudo ./target/release/asus-linux-daemon
-cd .. && flutter run -d linux
+make install       # build and install the daemon
+make run           # build and run the UI
 ```
 
 **Before claiming "done":**
 
 ```bash
 # Full verification sequence
-make test          # Unit tests
-make integration   # Integration tests
-make lint          # Static analysis
-flutter build      # Build verification
+make test                                                # Unit + integration tests
+cd rust_ui && cargo clippy --all-targets -- -D warnings  # Static analysis
+make build-artifacts                                     # Release build verification
 ```
 
 ## Verification Culture

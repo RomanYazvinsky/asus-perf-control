@@ -6,13 +6,12 @@ trigger: always_on
 
 Before starting any work in this project, ALWAYS read the README.md file at the project root to understand:
 
-- How to build the Rust backend (`cargo build --release` in `rust_core/`)
-- How to run the Flutter app (`flutter run -d linux`)
-- The project architecture (Flutter + Rust FFI via flutter_rust_bridge)
-- Troubleshooting steps (especially: Rust .so must be built before app will start)
+- How to build and run the desktop app (`make run`, i.e. `cargo run --release` in `rust_ui/`)
+- The project architecture (Rust egui UI in `rust_ui/`, sysfs readers in `rust_core/`, privileged D-Bus daemon in `rust_daemon/`)
+- Troubleshooting steps (`RUST_LOG=debug` traces every D-Bus call)
 
 Key facts:
 
-- `RustLib.init()` in `main.dart` loads `rust_core/target/release/libasus_linux_control_core.so`
-- Without building Rust first, the app will hang on startup
-- Never replace real FFI calls with mocks — find and fix the root cause instead
+- `rust_ui` links `rust_core` directly as a Rust library; there is no FFI layer
+- Screen logic lives in `rust_ui/src/features/` behind service traits and is unit-tested with fakes
+- Never replace real D-Bus or sysfs calls with mocks in production code — find and fix the root cause instead

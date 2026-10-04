@@ -1,35 +1,35 @@
-# flutter_application_1 Development Guidelines
+# asus-linux-control Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-04-13
+Last updated: 2026-10-03
 
 ## Active Technologies
-- Rust 1.75+ (backend), Dart 3.0+ / Flutter 3.16+ (frontend) (001-asus-linux-control)
-- JSON config at `~/.config/asus-linux-control/config.json` — TDP settings added as `tdp: TdpConfig` field (001-asus-linux-control)
-- Rust 1.75+ (backend), Dart 3.0+ / Flutter 3.16+ (frontend) + Rust: `flutter_rust_bridge` 2.12.0, `nvml-wrapper` 0.10+ (Nvidia GPU), sysfs interfaces (AMD GPU); Flutter: `flutter_bloc` ^8.1.0, `flutter_rust_bridge` ^2.0.0 (002-gpu-modes-egpu)
-- JSON config at `~/.config/asus-linux-control/config.json` - GPU mode preferences added (002-gpu-modes-egpu)
-
-- Rust 1.75+ (backend), Dart 3.0+/Flutter 3.16+ (frontend) (001-asus-linux-control)
+- Rust 1.95+ (all crates); desktop UI with `eframe`/`egui` 0.36, D-Bus via `zbus` 4, async via `tokio`
+- JSON settings at `~/.config/asus-linux-control/settings.json`, hardware profiles in `profiles/*.json` next to it
+- Privileged daemon `rust_daemon` (`com.asuslinuxcontrol.Daemon`) with polkit; asusd and supergfxd as system services
 
 ## Project Structure
 
 ```text
-src/
-tests/
+rust_ui/      # desktop app: backend/ (D-Bus clients), features/ (logic), settings/, ui/
+rust_core/    # sysfs readers (fans, temperatures)
+rust_daemon/  # privileged D-Bus daemon
+packaging/    # RPM spec, PKGBUILD, desktop/metainfo
 ```
 
 ## Commands
 
-cargo test [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] cargo clippy
+make test
+cd rust_ui && cargo clippy --all-targets -- -D warnings
+make run
 
 ## Code Style
 
-Rust 1.75+ (backend), Dart 3.0+/Flutter 3.16+ (frontend): Follow standard conventions
+Rust 2021: rustfmt defaults, clippy clean with `-D warnings`.
 
 ## Recent Changes
-- 002-gpu-modes-egpu: Added Rust 1.75+ (backend), Dart 3.0+ / Flutter 3.16+ (frontend) + Rust: `flutter_rust_bridge` 2.12.0, `nvml-wrapper` 0.10+ (Nvidia GPU), sysfs interfaces (AMD GPU); Flutter: `flutter_bloc` ^8.1.0, `flutter_rust_bridge` ^2.0.0
-- 001-asus-linux-control: Added Rust 1.75+ (backend), Dart 3.0+ / Flutter 3.16+ (frontend)
-
-- 001-asus-linux-control: Added Rust 1.75+ (backend), Dart 3.0+/Flutter 3.16+ (frontend)
+- 2026-10-03: Flutter UI replaced by native Rust (egui) app `rust_ui`; `flutter_rust_bridge` removed
+- 002-gpu-modes-egpu: GPU modes via supergfxd
+- 001-asus-linux-control: initial performance/TDP/battery controls
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->

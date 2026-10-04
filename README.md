@@ -1,6 +1,6 @@
 # ASUS Linux Control Tool
 
-A modern Flutter + Rust application for controlling ASUS laptop hardware on Linux.
+A native Rust application (egui UI + privileged D-Bus daemon) for controlling ASUS laptop hardware on Linux.
 
 ## Features
 
@@ -10,31 +10,23 @@ A modern Flutter + Rust application for controlling ASUS laptop hardware on Linu
 - ✅ Battery charge limit (20–100%)
 - ✅ D-Bus daemon с Polkit-авторизацией для всех write-операций
 - ✅ Material Design 3 dark theme
-- ✅ BLoC state management
+- ✅ Native Rust UI (egui), один бинарник без FFI
 - ✅ Type-safe Rust backend
 
 ## Architecture
 
 ```
-Flutter App (user space)
-    │ FFI (flutter_rust_bridge)
-    ▼
-rust_core  ──────────────────────────── performance mode (direct sysfs)
-    │ D-Bus call
-    ▼
-asus-control-daemon (root) ←── Polkit authorization
-    │ sysfs write
-    ▼
-/sys/devices/platform/asus-nb-wmi/
-    ppt_pl1_spl          — Sustained TDP (W)
-    ppt_pl2_sppt         — Boost TDP (W)
-    throttle_thermal_policy — Performance mode
-/sys/class/power_supply/BAT0/
-    charge_control_end_threshold — Battery limit
+asus-linux-control (egui, user space)
+    │ D-Bus (zbus)                         │ sysfs read (rust_core)
+    ├── xyz.ljones.Asusd ── profile, TDP, charge limit, fan curves
+    ├── org.supergfxctl.Daemon ── GPU mode
+    └── com.asuslinuxcontrol.Daemon (root) ←── Polkit authorization
+            temp limit, CPU boost, dynamic fan engine, package updates
 ```
 
-TDP и battery limit требуют daemon (привилегированный доступ через Polkit).
-Performance mode читается напрямую через FFI.
+`rust_ui` — desktop application: navigation shell, screens and per-screen logic
+(`features/*`, former BLoC). `rust_core` — sysfs readers (fans, temperatures) linked
+directly as an `rlib`. `rust_daemon` — privileged daemon, unchanged.
 
 ## Requirements
 
@@ -44,8 +36,8 @@ Performance mode читается напрямую через FFI.
 - D-Bus + Polkit
 
 **Dev:**
-- Flutter SDK 3.16+ / Dart 3.0+
-- Rust 1.75+ / Cargo
+- Rust 1.95+ / Cargo (требование egui 0.36)
+- Wayland or X11 session, OpenGL/Vulkan driver
 
 ## Quick Start
 
@@ -84,64 +76,60 @@ make install
 make run
 ```
 
-Собирает `rust_core` и запускает Flutter автоматически.
-
-**Через IDE (VS Code / Windsurf):** F5 → `Flutter: Run (Auto-build Rust)`
+Собирает `rust_ui` (вместе с `rust_core`) и запускает приложение.
 
 **Вручную:**
 
 ```bash
-cd rust_core && cargo build --release && cd ..
-flutter run -d linux
+cd rust_ui && cargo run --release
 ```
 
-> `RustLib.init()` в `main.dart` загружает `rust_core/target/release/libasus_linux_control_core.so`.
-> Без сборки Rust приложение зависнет при старте.
+Повторный запуск (например, ROG-клавишей через `gtk-launch asus-linux-control`) не
+открывает второе окно, а поднимает уже запущенное.
 
 ### Все команды make
 
 | Команда | Что делает |
 |---|---|
-| `make run` | Собрать rust_core + запустить Flutter |
+| `make run` | Собрать и запустить UI |
+| `make debug` | Debug-сборка UI с трассировкой D-Bus вызовов (`RUST_LOG=debug`) |
+| `make test` | Тесты `rust_core`, `rust_ui`, `rust_daemon` |
 | `make install` | Собрать rust_daemon + установить в систему |
-| `make build-rust` | Только rust_core |
+| `make build-ui` | Только UI (`rust_ui/target/release/asus-linux-control`) |
 | `make build-daemon` | Только rust_daemon |
-| `make build-flutter` | Release сборка Flutter |
 | `make clean` | Очистить артефакты |
 
 ## Build Instructions
 
-These commands build local binaries, the Flutter Linux bundle, and native
-package artifacts for the supported package ecosystems.
+These commands build local binaries and native package artifacts for the
+supported package ecosystems.
 
 ## Versioning
 
 Project releases use semantic versioning. The current release version is
-`0.0.1`; Flutter build metadata is tracked as `0.0.1+1`.
+`0.0.1`.
 
-Release tags use the `v<semver>` format, for example `v0.0.1`. Keep Flutter,
-RPM, pacman, and platform fallback metadata synchronized when bumping a release.
+Release tags use the `v<semver>` format, for example `v0.0.1`. Keep
+`rust_ui/Cargo.toml`, RPM, pacman, and platform fallback metadata synchronized
+when bumping a release.
 See `docs/release-versioning.md` for the full rules.
 
 ### Debug build and run
 
 ```bash
-make run
+make debug
 ```
 
-This builds `rust_core` in release mode and starts the Flutter Linux app.
-
-### Release Flutter app
+### Release UI
 
 ```bash
-make build-rust
-flutter build linux --release
+make build-ui
 ```
 
-The Linux bundle is written to:
+The binary is written to:
 
 ```text
-build/linux/x64/release/bundle/
+rust_ui/target/release/asus-linux-control
 ```
 
 ### Release daemon
@@ -189,8 +177,8 @@ dist/arch/
 ### Full local verification
 
 ```bash
-flutter test
-cd rust_daemon && cargo test
+make test
+cd rust_ui && cargo clippy --all-targets -- -D warnings
 ```
 
 Run these before packaging or installing a new build.
@@ -214,7 +202,7 @@ https://github.com/seerge/g-helper/pull/5691
 | Balanced | 1 | `throttle_thermal_policy` |
 | Turbo | 2 | `throttle_thermal_policy` |
 
-Читается/пишется напрямую через FFI (без daemon).
+Читается/пишется через asusd (`xyz.ljones.Platform.PlatformProfile`).
 
 ### TDP Control (через D-Bus daemon)
 
@@ -234,56 +222,44 @@ https://github.com/seerge/g-helper/pull/5691
 
 ```
 .
-├── rust_core/              # Rust FFI library (загружается Flutter)
+├── rust_ui/                # Desktop application (egui), binary `asus-linux-control`
 │   └── src/
-│       ├── api.rs          # FFI entry point
-│       └── services/       # performance.rs и др.
+│       ├── main.rs         # single instance + eframe bootstrap
+│       ├── app.rs          # navigation shell, alerts
+│       ├── backend/        # zbus clients: asusd, supergfxd, our daemon
+│       ├── features/       # per-screen logic and service traits (unit-tested)
+│       ├── settings/       # settings.json + profiles/*.json
+│       └── ui/             # screens, widgets, fan curve editor
+│
+├── rust_core/              # sysfs readers shared with the UI (fans, temperatures)
 │
 ├── rust_daemon/            # D-Bus daemon (запускается как root)
 │   └── src/
 │       ├── main.rs         # D-Bus interface + zbus
 │       ├── polkit.rs       # Polkit authorization
-│       └── hardware/
-│           ├── tdp.rs      # ppt_pl1_spl, ppt_pl2_sppt
-│           ├── battery.rs  # charge_control_end_threshold
-│           └── thermal.rs  # throttle_thermal_policy
-│
-├── lib/                    # Flutter frontend
-│   ├── main.dart
-│   ├── blocs/
-│   │   ├── performance/    # PerformanceBloc
-│   │   └── tdp/            # TdpBloc
-│   ├── screens/
-│   │   ├── home_screen.dart
-│   │   └── tdp_screen.dart
-│   └── services/
-│       ├── bridge_service.dart  # FFI + D-Bus facade
-│       └── dbus_client.dart     # D-Bus client
+│       └── hardware/       # tdp, battery, thermal, fan, cpu_boost...
 │
 ├── install/                # Установка daemon
 │   ├── install.sh
 │   ├── dbus/               # D-Bus/Polkit конфигурация
 │   └── DBUS_INSTALLATION.md
 │
+├── packaging/              # RPM spec, PKGBUILD, desktop/metainfo
 └── Makefile                # Основные команды сборки
 ```
 
+Настройки хранятся в `$XDG_CONFIG_HOME/asus-linux-control/settings.json` (профили —
+в `profiles/` рядом), сессия XG-диагностики — в
+`$XDG_STATE_HOME/asus-linux-control/xg_mobile_fan_diagnostic.json`. Формат файлов
+совпадает с прежней Flutter-версией.
+
 ## Development
 
-### После изменений в rust_core (FFI)
+### После изменений в rust_ui / rust_core
 
 ```bash
-cd rust_core && cargo build --release
-flutter run -d linux  # hot restart не подхватывает .so
-```
-
-Если изменился публичный API в `api.rs` — перегенерировать биндинги:
-
-```bash
-flutter_rust_bridge_codegen generate \
-  --rust-input=crate::api \
-  --rust-root=rust_core \
-  --dart-output=lib/bridge_generated.dart
+make test
+make run
 ```
 
 ### После изменений в rust_daemon
@@ -325,46 +301,22 @@ ls -la /sys/class/platform/asus-nb-wmi/
 sudo modprobe asus-nb-wmi
 ```
 
-### App Won't Start / Зависает на старте
-
-Если приложение зависает при запуске — скорее всего не собрана Rust библиотека.
-`RustLib.init()` пытается загрузить `libasus_linux_control_core.so` и блокируется,
-если файл отсутствует.
+### App Won't Start
 
 ```bash
-# 1. Проверьте, что .so файл существует
-ls -la rust_core/target/release/libasus_linux_control_core.so
+# Запуск с подробным логом всех D-Bus вызовов
+RUST_LOG=debug asus-linux-control
 
-# 2. Если файла нет — соберите Rust backend
-cd rust_core
-cargo build --release
-cd ..
-
-# 3. Очистите Flutter кеш и перезапустите
-flutter clean
-flutter pub get
-flutter run -d linux
-```
-
-### FFI Error: flutter_rust_bridge has not been initialized
-
-Означает, что `await RustLib.init()` не был вызван до использования FFI функций.
-Проверьте, что `main.dart` содержит:
-
-```dart
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await RustLib.init();
-  runApp(const AsusLinuxControlApp());
-}
+# Окно не появляется, но процесс уже запущен — второй запуск только поднимает
+# существующее окно. Устаревший сокет удаляется автоматически:
+ls -la "$XDG_RUNTIME_DIR/asus-linux-control.sock"
 ```
 
 ## 📋 Roadmap
 
 ### ✅ Phase 1: MVP (Current)
 - Performance mode control with parameter reading
-- Basic UI with Material Design 3
-- BLoC state management
+- Native egui UI with a Material-style dark theme
 
 ### 🚧 Phase 2: Monitoring (Next)
 - Real-time CPU/GPU temperature monitoring
@@ -389,9 +341,8 @@ Future<void> main() async {
 ## 🤝 Contributing
 
 This is a learning/demonstration project showcasing:
-- Flutter + Rust integration via FFI
-- BLoC pattern for state management
-- Material Design 3 implementation
+- Native Rust desktop UI with egui
+- Testable screen logic behind service traits
 - Linux sysfs hardware control
 - Type-safe hardware abstraction
 
@@ -402,5 +353,5 @@ Educational/demonstration project.
 ## 🙏 Acknowledgments
 
 - **ASUS WMI Documentation**: Linux kernel documentation
-- **flutter_rust_bridge**: FFI bridge framework
+- **egui / eframe**: immediate-mode UI framework
 - **Reference Projects**: G-Helper, AsusCtl, Starlight

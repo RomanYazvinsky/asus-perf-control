@@ -16,8 +16,8 @@ Daemon предоставляет защищённый D-Bus интерфейс 
 ## Architecture
 
 ```
-Flutter App
-    │ D-Bus call (via dbus_client.dart)
+asus-linux-control (rust_ui)
+    │ D-Bus call (via rust_ui/src/backend/daemon.rs)
     ▼
 asus-control-daemon  ←── Polkit (активный пользователь пишет без пароля)
     │

@@ -1,6 +1,5 @@
-mod frb_generated; /* AUTO INJECTED BY flutter_rust_bridge. This line may not be accurate, and you can change it according to your needs. */
 // Rust library root for ASUS Linux Control Tool
-// Re-exports all public API for flutter_rust_bridge
+// Hardware access shared by the desktop UI (rust_ui)
 
 pub mod api;
 pub mod services;

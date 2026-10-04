@@ -14,15 +14,14 @@ The first semantic-versioned release is `0.0.1`.
 
 The release version must stay synchronized across:
 
-- `pubspec.yaml`: Flutter application version, including build metadata.
+- `rust_ui/Cargo.toml`: desktop application version.
 - `Makefile`: source archive and package build version.
 - `packaging/rpm/asus-linux-control.spec`: RPM package version and changelog.
 - `packaging/arch/PKGBUILD`: pacman package version.
-- platform fallback metadata in `ios/`, `macos/`, and `windows/`.
 
-Flutter uses `version: <semver>+<build>`. Native packages use `<semver>` and
-their ecosystem-specific package release number. For example, Flutter
-`0.0.1+1` maps to RPM `0.0.1-1` and pacman `pkgver=0.0.1`, `pkgrel=1`.
+Cargo uses `version = "<semver>"`. Native packages use `<semver>` and their
+ecosystem-specific package release number. For example, `0.0.1` maps to RPM
+`0.0.1-1` and pacman `pkgver=0.0.1`, `pkgrel=1`.
 
 ## Git Tags
 

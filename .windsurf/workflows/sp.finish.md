@@ -34,7 +34,7 @@ description: Finishing a development branch - merge/PR decision workflow
 - [ ] No unconfirmed hardware operations
 
 **Principle VI - Single Responsibility:**
-- [ ] Files under line limits (Dart <150, Rust <200)
+- [ ] Files under line limits (Rust <200)
 - [ ] No god objects created
 
 **Principle VII - Plan-Review-Implement:**
@@ -120,12 +120,9 @@ git rebase main  # or: git merge main
 ### 2. Final Verification
 
 ```bash
-# Run full test suite
-flutter test
-# or
-cargo test
-# or
+# Run full test suite (rust_core, rust_ui, rust_daemon)
 make test
+cd rust_ui && cargo clippy --all-targets -- -D warnings
 ```
 
 ### 3. Prepare Commit History (Optional)

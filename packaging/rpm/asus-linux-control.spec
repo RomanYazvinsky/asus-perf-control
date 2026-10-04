@@ -16,18 +16,23 @@ Requires: asus-linux-control-gui = %{version}-%{release}
 Requires: asus-linux-control-daemon = %{version}-%{release}
 
 %description
-Meta package that installs the ASUS Linux Control Flutter GUI and privileged
-system daemon.
+Meta package that installs the ASUS Linux Control desktop application and
+privileged system daemon.
 
 %package gui
-Summary:        ASUS Linux Control Flutter desktop application
+Summary:        ASUS Linux Control desktop application
 Requires:       asus-linux-control-daemon = %{version}-%{release}
+# Loaded at runtime by the windowing/rendering stack (dlopen), invisible to auto-requires.
+Requires:       libxkbcommon
+Requires:       libwayland-client
+Requires:       mesa-libEGL
+Recommends:     vulkan-loader
 Requires(post): systemd
 Requires(preun): systemd
 Requires(postun): systemd
 
 %description gui
-Flutter desktop application for ASUS Linux Control.
+Native Rust (egui) desktop application for ASUS Linux Control.
 
 %package daemon
 Summary:        ASUS Linux Control privileged system daemon
@@ -45,7 +50,6 @@ Privileged Rust daemon and system integration files for ASUS Linux Control.
 # Release artifacts are produced by the project build pipeline.
 
 %install
-install -dm0755 %{buildroot}/usr/lib/asus-linux-control/gui
 install -dm0755 %{buildroot}/usr/lib/asus-linux-control
 install -dm0755 %{buildroot}/usr/bin
 install -dm0755 %{buildroot}/usr/share/applications
@@ -59,13 +63,7 @@ install -dm0755 %{buildroot}/usr/share/dbus-1/system.d
 install -dm0755 %{buildroot}/usr/share/polkit-1/actions
 install -dm0755 %{buildroot}/usr/lib/udev/rules.d
 
-install -Dm0755 build/linux/x64/release/bundle/asus-linux-control \
-  %{buildroot}/usr/lib/asus-linux-control/gui/asus-linux-control
-cp -a build/linux/x64/release/bundle/data \
-  %{buildroot}/usr/lib/asus-linux-control/gui/
-cp -a build/linux/x64/release/bundle/lib \
-  %{buildroot}/usr/lib/asus-linux-control/gui/
-ln -s ../lib/asus-linux-control/gui/asus-linux-control \
+install -Dm0755 rust_ui/target/release/asus-linux-control \
   %{buildroot}/usr/bin/asus-linux-control
 
 install -Dm0644 packaging/linux/asus-linux-control.desktop \
@@ -124,7 +122,6 @@ systemctl try-restart asus-control-daemon.service >/dev/null 2>&1 || :
 
 %files gui
 /usr/bin/asus-linux-control
-/usr/lib/asus-linux-control/gui/
 /usr/share/applications/asus-linux-control.desktop
 /usr/share/icons/hicolor/256x256/apps/asus-linux-control.png
 /usr/share/metainfo/asus-linux-control.metainfo.xml
@@ -142,5 +139,8 @@ systemctl try-restart asus-control-daemon.service >/dev/null 2>&1 || :
 /usr/lib/udev/rules.d/99-asus-control.rules
 
 %changelog
+* Sat Oct 03 2026 ASUS Linux Control <maintainers@example.invalid> - 0.0.1-1
+- Replace the Flutter GUI with a native Rust (egui) binary.
+
 * Wed Jun 24 2026 ASUS Linux Control <maintainers@example.invalid> - 0.0.1-1
 - Initial semantic-versioned package release.

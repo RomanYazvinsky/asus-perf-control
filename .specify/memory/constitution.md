@@ -1,27 +1,33 @@
 <!--
-Sync Impact Report (Version 1.1.0 → 1.2.0):
-- Version change: 1.1.0 → 1.2.0 (MINOR: new principle + structural fix)
-- Bump rationale:
-  1. Principle VI moved to correct location in Core Principles
-     (was misplaced inside Testing Standards section)
-  2. Principle VII Plan-Review-Implement added: mandatory plan-first
-     workflow with tmp/ artifacts and bug-loop discipline
-- Principles fixed (location only, content unchanged):
-  VI. Single Responsibility — moved from Testing Standards to Core Principles
-- Principles added:
-  VII. Plan-Review-Implement Discipline
-- Principles unchanged:
-  I. Hardware Safety First (NON-NEGOTIABLE)
-  II. Modular Service Architecture
-  III. Type-Safe FFI Boundary
-  IV. Test-Before-Hardware
-  V. Least Privilege Security Model
+Sync Impact Report (Version 1.2.0 → 2.0.0):
+- Version change: 1.2.0 → 2.0.0 (MAJOR: principle III fundamentally changed)
+- Bump rationale: the Flutter UI and flutter_rust_bridge FFI were replaced by a
+  native Rust (egui) application `rust_ui` (2026-10-03). There is no FFI boundary
+  any more; the UI talks to asusd/supergfxd/our daemon over D-Bus and links
+  `rust_core` as a plain Rust library.
+- Principles changed:
+  II. Modular Service Architecture — adds the `rust_ui/src/features` service-trait layer
+  III. Type-Safe FFI Boundary → Type-Safe Process Boundaries (D-Bus contracts)
+  IV. Test-Before-Hardware — FFI/Dart test requirements replaced by Rust feature tests
+  VI. Single Responsibility — Dart/Flutter widget rules replaced by egui screen rules
+- Sections changed: Testing Standards (Flutter frontend → Rust UI), Test Execution,
+  Input Validation (FFI parameters → D-Bus payloads)
+- Principles unchanged: I, V, VII
 - Templates requiring updates:
-  ⚠ plan-template.md - add VI, VII to Constitution Check section
-  ⚠ spec-template.md - add file-size/responsibility constraints
-  ⚠ tasks-template.md - add refactor task type for SRP violations
-- Follow-up TODOs: none
-- Last amended: 2026-04-10
+  ✅ .windsurf workflows/rules updated (sp.plan, sp.review, sp.finish, sp.execute,
+     sp.tdd, error-handling, specify-rules)
+  ⚠ plan-template.md / spec-template.md - unchanged, no Flutter references
+- Follow-up TODOs:
+  ⚠ Principle VI violations in rust_ui (files > 200 lines, P1 refactor):
+    features/xg_diag/model.rs, features/fan/mod.rs, settings/store.rs,
+    features/tdp.rs, features/gpu.rs, features/xg_diag/mod.rs, features/updates.rs,
+    features/services.rs, backend/asusd.rs, features/fan/model.rs,
+    features/cpu_boost.rs, ui/screens/fan.rs, ui/widgets.rs, ui/curve_editor.rs,
+    settings/model.rs, ui/screens/tdp.rs, app.rs, ui/screens/xg_diag.rs
+    (test modules features/*/tests.rs and settings/tests.rs also exceed the limit)
+  ⚠ Principle III: `rust_core/src/services/performance.rs` still shells out to
+    `dbus-send`; it is unused by `rust_ui` and should be removed or ported
+- Last amended: 2026-10-03
 -->
 
 # ASUS Linux Control Tool Constitution
@@ -51,32 +57,43 @@ Backend MUST be organized into independent service modules, one per hardware fea
 - Each service exposes a controller struct with `new()` constructor and feature methods
 - Services MUST NOT directly call other services (use composition in api.rs instead)
 - Each service MUST have corresponding unit tests in `rust_core/tests/`
+- UI logic MUST live in `rust_ui/src/features/<domain>` and reach hardware only through
+  a per-domain service trait (`PerformanceService`, `TdpService`, `FanService`, ...);
+  production implementations live in `rust_ui/src/features/services.rs`
 
 **Rationale:** Hardware features are orthogonal - a broken sensor module should not prevent performance mode changes. Independent modules enable parallel development and isolated testing. Mocking hardware dependencies becomes trivial when services are decoupled.
 
-### III. Type-Safe FFI Boundary
+### III. Type-Safe Process Boundaries
 
-All communication between Flutter and Rust MUST use `flutter_rust_bridge` with generated bindings. Manual FFI is prohibited.
+The desktop application (`rust_ui`) and the privileged daemon (`rust_daemon`) are
+separate processes. All communication between them, asusd and supergfxd MUST go
+through typed D-Bus clients in `rust_ui/src/backend/`. FFI and shelling out to
+`dbus-send` are prohibited.
 
 **Mandatory Requirements:**
-- All public API functions in `rust_core/src/api.rs` MUST use `#[frb(sync)]` or async annotations
-- All data structures crossing FFI MUST derive `Serialize` and be documented in `contracts/ffi-api.md`
-- Codegen MUST be run after any API signature change before testing
-- All FFI functions returning fallible operations MUST use `Result<T, String>` with descriptive errors
+- Every D-Bus method/property used by the UI MUST be wrapped by a typed client method
+  (explicit Rust argument and reply types matching the D-Bus signature)
+- JSON payloads crossing D-Bus (fan engine config, CPU boost status, package update
+  status) MUST be parsed into typed structs with explicit schema/version checks
+- Client methods returning fallible operations MUST use `anyhow::Result<T>` with
+  descriptive context
 - Error messages MUST be user-facing (no internal implementation details leaked)
+- D-Bus contract changes MUST update both the daemon and `rust_ui/src/backend/` in the same change
 
-**Rationale:** Manual FFI is error-prone and breaks on Rust type changes. Generated bindings provide compile-time type safety across language boundaries. This eliminates an entire class of segfaults and memory safety bugs.
+**Rationale:** Process boundaries replace the former language boundary. Typed clients
+catch signature mismatches at compile time or in unit tests (e.g. curve struct
+signature checks) instead of at runtime on real hardware.
 
 ### IV. Test-Before-Hardware
 
 No code touching hardware interfaces (sysfs writes, USB HID, NVML calls) may be merged without:
-1. Unit tests with mocked hardware interfaces
-2. Integration tests verifying FFI bridge functionality
+1. Unit tests with mocked hardware interfaces (fake service traits)
+2. Contract tests for D-Bus payload parsing and signatures
 3. Manual validation on real hardware (documented in PR)
 
 **Mandatory Test Coverage:**
 - Every service module: >= 80% line coverage
-- Every FFI function: Integration test calling from Dart
+- Every `rust_ui` feature operation: test against a fake service
 - Every validation rule: Test with invalid inputs (expect errors)
 - Every safety check: Test that dangerous operations are rejected
 
@@ -102,16 +119,15 @@ Every file, class, widget, and module MUST have exactly one reason to change.
 God objects and mega-files are explicitly prohibited.
 
 **Mandatory Rules:**
-- Dart files MUST NOT exceed **150 lines** (generated files excluded).
-  Files approaching this limit MUST be split before adding new functionality.
 - Rust source files MUST NOT exceed **200 lines**.
+  Files approaching this limit MUST be split before adding new functionality.
   Services, hardware modules, and handlers MUST each live in their own file.
-- A Flutter `Widget` class MUST NOT contain business logic, data fetching,
-  or state management beyond coordinating its direct children.
+- egui screen code (`rust_ui/src/ui/`) MUST NOT contain business logic, D-Bus
+  calls or settings writes; it renders state and dispatches `features` operations.
 - A Rust function MUST do one thing: read OR write OR validate OR transform —
   never a combination in a single function body.
-- Screens (`screens/`) MUST only coordinate `BlocProvider`/`BlocBuilder` and
-  delegate all visual sub-sections to dedicated widget files in `widgets/`.
+- Screens (`ui/screens/`) MUST only coordinate feature state and tasks and
+  delegate reusable visual pieces to `ui/widgets.rs` or dedicated widget modules.
 - A service or repository class MUST cover exactly one feature domain
   (e.g., `BatteryService`, `TdpService`) — mixed-domain services are prohibited.
 - D-Bus handlers in the Rust daemon MUST delegate hardware calls to the
@@ -125,7 +141,7 @@ God objects and mega-files are explicitly prohibited.
 
 **Rationale:** Large files accumulate unrelated concerns, making bugs harder to
 locate, tests harder to write, and changes higher-risk. The 2026-04-10 review
-found `tdp_screen.dart` at 419 lines (4 distinct widgets) and a monolithic
+found the former `tdp_screen.dart` at 419 lines (4 distinct widgets) and a monolithic
 `hardware.rs` — both split as immediate corrective actions. This principle
 prevents recurrence.
 
@@ -188,7 +204,7 @@ this codebase.
 All external inputs MUST be validated before use:
 - User configuration loaded from JSON: Schema validation with fallback to defaults
 - Hardware sensor readings: Range checks (temps -50 to 120°C, RPM 0-10000)
-- FFI parameters: Type enforced by bridge, ranges checked in Rust
+- D-Bus replies and JSON payloads: typed deserialization, schema version checks, ranges checked in Rust
 - File paths: Canonicalize and verify prefix before access
 
 ### Permission Model
@@ -227,11 +243,10 @@ Never expose:
 - Test data structure serialization (config save/load)
 - Run in CI without hardware dependencies
 
-**Integration Tests** (`rust_core/tests/integration/`):
-- Test FFI bridge by loading the dynamic library
-- Verify generated bindings match API signatures
+**Integration Tests** (`rust_ui/tests/`, `rust_daemon/tests/`):
+- Verify D-Bus signatures and JSON payload contracts between UI and daemon
+- Verify packaging and integration files (spec, PKGBUILD, D-Bus/polkit/systemd)
 - Test async functions complete without deadlock
-- Test stream functionality (sensor monitoring)
 
 **Hardware Tests** (manual, documented in test reports):
 - Performance mode changes reflected in `/sys` files
@@ -240,26 +255,23 @@ Never expose:
 - Battery charge limit persists across reboots
 - RGB/Anime Matrix displays correctly
 
-### Flutter Frontend Tests
+### Rust UI Tests
 
-**Widget Tests** (`test/`):
-- Every screen renders without error
-- State changes update UI correctly
-- Error states display user-friendly messages
-- Navigation flows work correctly
+**Feature Tests** (`rust_ui/src/features/**`):
+- Every feature operation tested against fake service traits
+- Saved-settings restore and mismatch paths covered
+- Error states produce user-facing messages
 
-**Integration Tests** (`integration_test/`):
-- Complete user flow: Launch → change mode → verify setting persists
-- Sensor monitoring stream updates UI in real-time
-- Configuration save/load preserves all settings
-- Error scenarios display dialogs and don't crash
+**Widget Logic Tests** (`rust_ui/src/ui/**`):
+- Pure editor/navigation logic (e.g. fan curve editing, gamepad commands) unit-tested
+- Settings files stay compatible with previously written JSON
 
 ### Test Execution
 
 Before every PR merge:
 ```bash
-cd rust_core && cargo test && cargo clippy -- -D warnings
-cd .. && flutter test && flutter analyze
+make test
+cd rust_ui && cargo clippy --all-targets -- -D warnings
 ```
 
 Before every release:
@@ -294,4 +306,4 @@ This constitution is the authoritative source for project development standards.
 - Technical debt intentionally incurred MUST have mitigation plan with timeline
 - Workarounds for hardware limitations MUST be documented with references
 
-**Version**: 1.2.0 | **Ratified**: 2026-04-08 | **Last Amended**: 2026-04-10
+**Version**: 2.0.0 | **Ratified**: 2026-04-08 | **Last Amended**: 2026-10-03

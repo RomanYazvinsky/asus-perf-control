@@ -2,18 +2,15 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Build Rust Backend",
+      "label": "Build UI",
       "type": "shell",
       "command": "cargo",
-      "args": ["build", "--release"],
+      "args": ["build"],
       "options": {
-        "cwd": "${workspaceFolder}/rust_core"
+        "cwd": "${workspaceFolder}/rust_ui"
       },
       "problemMatcher": ["$rustc"],
-      "group": {
-        "kind": "build",
-        "isDefault": false
-      },
+      "group": "build",
       "presentation": {
         "echo": true,
         "reveal": "always",
@@ -33,12 +30,14 @@
       "group": "build"
     },
     {
-      "label": "Flutter: Run (with Rust build)",
-      "dependsOn": ["Build Rust Backend"],
+      "label": "Run UI",
       "type": "shell",
-      "command": "flutter",
-      "args": ["run", "-d", "linux"],
-      "problemMatcher": [],
+      "command": "cargo",
+      "args": ["run", "--release"],
+      "options": {
+        "cwd": "${workspaceFolder}/rust_ui"
+      },
+      "problemMatcher": ["$rustc"],
       "group": {
         "kind": "build",
         "isDefault": true
@@ -51,13 +50,12 @@
       }
     },
     {
-      "label": "Flutter: Build Release (with Rust)",
-      "dependsOn": ["Build Rust Backend"],
+      "label": "Test All",
       "type": "shell",
-      "command": "flutter",
-      "args": ["build", "linux", "--release"],
-      "problemMatcher": [],
-      "group": "build"
+      "command": "make",
+      "args": ["test"],
+      "problemMatcher": ["$rustc"],
+      "group": "test"
     },
     {
       "label": "Check Daemon Installation",
@@ -73,7 +71,7 @@
     },
     {
       "label": "Build and Check All",
-      "dependsOn": ["Build Rust Backend", "Check Daemon Installation"],
+      "dependsOn": ["Build UI", "Check Daemon Installation"],
       "dependsOrder": "sequence",
       "problemMatcher": []
     },

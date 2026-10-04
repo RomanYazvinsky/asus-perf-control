@@ -42,10 +42,9 @@ If the spec covers multiple independent subsystems:
 - Split by responsibility, not by technical layer
 
 **Constitution VI Compliance:**
-- Dart files: max 150 lines
 - Rust files: max 200 lines
-- One feature per service
-- Widgets delegate to sub-widgets
+- One feature per service trait (`rust_ui/src/features/`)
+- Screens render state and delegate to widgets; no business logic in `ui/`
 
 ## Plan Document Header
 
@@ -63,7 +62,7 @@ If the spec covers multiple independent subsystems:
 **Tech Stack:** [Key technologies/libraries]
 
 **Affected Files:**
-- Create: `path/to/new/file.dart`
+- Create: `path/to/new/file.rs`
 - Modify: `path/to/existing.rs:123-145`
 
 ---
@@ -151,22 +150,23 @@ After plan is complete:
 ### Task 1: Create TDP Service
 
 **Files:**
-- Create: `lib/services/tdp_service.dart`
-- Test: `test/services/tdp_service_test.dart`
+- Modify: `rust_ui/src/features/tdp.rs`
+- Test: `rust_ui/src/features/tdp.rs` (`#[cfg(test)] mod tests`)
 
-- [ ] **Step 1: Write failing test for readTdp()**
+- [ ] **Step 1: Write failing test for load()**
 
-Mocks `readFileSync` to return test value, verifies parsing.
+Uses a fake `TdpService` returning a known config, verifies the loaded state.
 
-```dart
-test('readTdp returns parsed value', () {
-  // Arrange
-  mockFile('35000');
-  // Act
-  final result = tdpService.readTdp();
-  // Assert
-  expect(result, equals(35));
-});
+```rust
+#[tokio::test]
+async fn load_returns_hardware_limits() {
+    // Arrange
+    let service = fake(config(35, 45, true, 0));
+    // Act
+    let state = load(&service, &store(None)).await;
+    // Assert
+    assert!(matches!(state, TdpState::Loaded(l) if l.sustained_w == 35));
+}
 ```
 
 - [ ] **Step 2: Run test - expect FAIL**

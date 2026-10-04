@@ -49,20 +49,19 @@ Write one minimal test showing what should happen.
 - One thing per test
 - Readable without looking at implementation
 
-```dart
-test('retries failed operations 3 times', () async {
-  int attempts = 0;
-  final operation = () {
-    attempts++;
-    if (attempts < 3) throw Error();
-    return 'success';
-  };
+```rust
+#[tokio::test]
+async fn retries_failed_operations_3_times() {
+    let mut attempts = 0;
+    let result = retry_operation(|| {
+        attempts += 1;
+        if attempts < 3 { Err("boom") } else { Ok("success") }
+    })
+    .await;
 
-  final result = await retryOperation(operation);
-
-  expect(result, equals('success'));
-  expect(attempts, equals(3));
-});
+    assert_eq!(result, Ok("success"));
+    assert_eq!(attempts, 3);
+}
 ```
 
 **Bad Test:**
@@ -93,18 +92,10 @@ Write the simplest code that makes the test pass.
 - No refactoring yet
 - Ugly is fine
 
-```dart
+```rust
 // Ugly but GREEN is fine
-String retryOperation(Function f) {
-  try {
-    return f();
-  } catch (e) {
-    try {
-      return f();
-    } catch (e) {
-      return f();
-    }
-  }
+async fn retry_operation<T, E>(mut f: impl FnMut() -> Result<T, E>) -> Result<T, E> {
+    f().or_else(|_| f()).or_else(|_| f())
 }
 ```
 
@@ -164,20 +155,21 @@ If tests fail during refactor:
 
 ## Project-Specific TDD
 
-**Flutter + Rust FFI (this project):**
+**Rust UI features (this project):**
 
-```dart
-// Test FFI boundary with ffigen mocks
-test('readTdp returns parsed integer', () {
-  // Arrange: mock the FFI call
-  when(() => mockFfi.readTdp()).thenReturn(35000);
-  
-  // Act
-  final result = service.readTdp();
-  
-  // Assert
-  expect(result, equals(35)); // 35000 / 1000
-});
+```rust
+// Test screen logic against a fake service trait
+#[tokio::test]
+async fn restores_saved_charge_limit() {
+    // Arrange: hardware reports 100 %, settings say 80 %
+    let service = fake(100, true);
+
+    // Act
+    let state = check_support_and_load(&service, &store(Some(80))).await;
+
+    // Assert
+    assert_eq!(state, BatteryState::Loaded { charge_limit: 80 });
+}
 ```
 
 **Rust Daemon:**

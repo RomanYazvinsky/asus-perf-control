@@ -338,7 +338,7 @@ cd rust_core && cargo test --test steam_input_tests
 
 Expected: PASS.
 
-- [ ] **Step 7: Regenerate FRB bindings**
+- [x] **Step 7: Regenerate FRB bindings**
 
 Run:
 
@@ -358,7 +358,9 @@ git add rust_core/src/services/steam_input.rs rust_core/src/services/mod.rs rust
 git commit -m "feat: expose Steam Input facade over FFI"
 ```
 
-Current tree note: the Rust facade is present, but the generated Dart bindings are stale. Run Step 7 before Task 3.
+Current tree note: the Rust facade is present and the generated Dart bindings expose
+`getSteamInputStatus`, `pollSteamInputEvents`, `SteamInputStatus`,
+`SteamInputEvent`, and `UiInputCommand`.
 
 ---
 
@@ -369,7 +371,7 @@ Current tree note: the Rust facade is present, but the generated Dart bindings a
 - Create: `lib/services/input/steam_input_service.dart`
 - Test: `test/services/steam_input_service_test.dart`
 
-- [ ] **Step 1: Write failing Dart tests**
+- [x] **Step 1: Write failing Dart tests**
 
 Create `test/services/steam_input_service_test.dart`:
 
@@ -404,7 +406,7 @@ void main() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run:
 
@@ -414,7 +416,7 @@ flutter test test/services/steam_input_service_test.dart
 
 Expected: FAIL because the service files do not exist.
 
-- [ ] **Step 3: Add Dart command models**
+- [x] **Step 3: Add Dart command models**
 
 Create `lib/services/input/ui_input_command.dart`:
 
@@ -475,7 +477,7 @@ class SteamInputAvailability {
 }
 ```
 
-- [ ] **Step 4: Add the polling service**
+- [x] **Step 4: Add the polling service**
 
 Create `lib/services/input/steam_input_service.dart`:
 
@@ -577,7 +579,7 @@ class FakeSteamInputService implements SteamInputService {
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -604,7 +606,7 @@ git commit -m "feat: add Dart Steam Input service"
 - Modify: `lib/main.dart`
 - Test: `test/widgets/gamepad_input_scope_test.dart`
 
-- [ ] **Step 1: Write failing widget tests**
+- [x] **Step 1: Write failing widget tests**
 
 Create `test/widgets/gamepad_input_scope_test.dart`:
 
@@ -673,7 +675,7 @@ void main() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run:
 
@@ -683,7 +685,7 @@ flutter test test/widgets/gamepad_input_scope_test.dart
 
 Expected: FAIL because `GamepadInputScope` does not exist.
 
-- [ ] **Step 3: Add focusable wrapper**
+- [x] **Step 3: Add focusable wrapper**
 
 Create `lib/widgets/input/gamepad_focusable.dart`:
 
@@ -736,7 +738,7 @@ class GamepadFocusable extends StatelessWidget {
 }
 ```
 
-- [ ] **Step 4: Add input scope**
+- [x] **Step 4: Add input scope**
 
 Create `lib/widgets/input/gamepad_input_scope.dart`:
 
@@ -832,7 +834,7 @@ class UiInputIntent extends Intent {
 }
 ```
 
-- [ ] **Step 5: Wire the scope in the app**
+- [x] **Step 5: Wire the scope in the app**
 
 In `lib/main.dart`, add imports:
 
@@ -859,7 +861,7 @@ In `MaterialApp.builder`, wrap the existing `InputDiagnostics` result with that 
         );
 ```
 
-- [ ] **Step 6: Run widget tests**
+- [x] **Step 6: Run widget tests**
 
 Run:
 
@@ -884,7 +886,7 @@ git commit -m "feat: route gamepad commands through Flutter focus"
 - Modify: `lib/widgets/fan/fan_curve_editor.dart`
 - Test: `test/widgets/fan_curve_editor_gamepad_test.dart`
 
-- [ ] **Step 1: Write failing fan editor tests**
+- [x] **Step 1: Write failing fan editor tests**
 
 Create `test/widgets/fan_curve_editor_gamepad_test.dart`:
 
@@ -960,7 +962,7 @@ void main() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run:
 
@@ -970,7 +972,7 @@ flutter test test/widgets/fan_curve_editor_gamepad_test.dart
 
 Expected: FAIL because fan curve editor does not handle `UiInputIntent`.
 
-- [ ] **Step 3: Add selection state and actions**
+- [x] **Step 3: Add selection state and actions**
 
 In `lib/widgets/fan/fan_curve_editor.dart`, add imports:
 
@@ -1008,7 +1010,7 @@ Wrap the existing `Card` returned by `build` in `FocusableActionDetector` and `A
 
 Close the two new wrappers after the existing `Card`.
 
-- [ ] **Step 4: Add selected point label**
+- [x] **Step 4: Add selected point label**
 
 Under the chart and before `Temperature (°C) -> Fan Speed (%)`, add:
 
@@ -1035,7 +1037,7 @@ String _selectedPointLabel() {
 }
 ```
 
-- [ ] **Step 5: Add command handling**
+- [x] **Step 5: Add command handling**
 
 Add this method to `_FanCurveEditorState`:
 
@@ -1087,7 +1089,7 @@ void _nudgeSelectedPoint({double deltaTemp = 0, double deltaSpeed = 0}) {
 }
 ```
 
-- [ ] **Step 6: Render selected points distinctly**
+- [x] **Step 6: Render selected points distinctly**
 
 In `FlDotCirclePainter`, change the color decision to:
 
@@ -1100,7 +1102,7 @@ In `FlDotCirclePainter`, change the color decision to:
                                   strokeWidth: _selectedPointIndex == index ? 4 : 2,
 ```
 
-- [ ] **Step 7: Run fan editor tests**
+- [x] **Step 7: Run fan editor tests**
 
 Run:
 

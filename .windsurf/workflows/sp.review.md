@@ -50,7 +50,7 @@ Before requesting review, verify:
 
 ### Architecture (Constitution Principle VI)
 - [ ] Single Responsibility: each file/class has one job
-- [ ] File size: Dart <150 lines, Rust <200 lines
+- [ ] File size: Rust <200 lines
 - [ ] No god objects
 - [ ] Clear boundaries
 
@@ -81,8 +81,8 @@ Before requesting review, verify:
 **How:** [High-level approach]
 
 **Key Files:**
-- `path/to/main/file.dart` - [what it does]
-- `path/to/test/file_test.dart` - [test coverage]
+- `rust_ui/src/features/feature.rs` - [what it does]
+- `rust_ui/src/features/feature/tests.rs` - [test coverage]
 
 **Plan Reference:** `tmp/plan-feature.md` (if applicable)
 

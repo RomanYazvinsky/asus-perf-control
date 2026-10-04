@@ -2,7 +2,7 @@
 
 ASUS Linux Control publishes native packages for repository-backed installs and
 updates. The recommended install target is the top-level `asus-linux-control`
-package, which depends on both the Flutter GUI and the privileged daemon.
+package, which depends on both the desktop GUI and the privileged daemon.
 
 ## Fedora And Bazzite RPM Repository
 

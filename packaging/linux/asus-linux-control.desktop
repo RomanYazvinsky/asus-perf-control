@@ -7,3 +7,4 @@ Icon=asus-linux-control
 Terminal=false
 Categories=System;Settings;
 StartupNotify=true
+StartupWMClass=asus-linux-control

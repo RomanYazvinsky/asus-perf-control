@@ -15,18 +15,13 @@ package_asus-linux-control() {
 }
 
 package_asus-linux-control-gui() {
-  pkgdesc='ASUS Linux Control Flutter desktop application'
-  depends=('asus-linux-control-daemon')
+  pkgdesc='ASUS Linux Control desktop application'
+  # Loaded at runtime by the windowing/rendering stack (dlopen).
+  depends=('asus-linux-control-daemon' 'libxkbcommon' 'wayland' 'libglvnd')
+  optdepends=('vulkan-icd-loader: Vulkan rendering backend')
   install=asus-linux-control-gui.install
 
-  install -Dm755 "$srcdir/$pkgbase-$pkgver/build/linux/x64/release/bundle/asus-linux-control" \
-    "$pkgdir/usr/lib/asus-linux-control/gui/asus-linux-control"
-  cp -a "$srcdir/$pkgbase-$pkgver/build/linux/x64/release/bundle/data" \
-    "$pkgdir/usr/lib/asus-linux-control/gui/"
-  cp -a "$srcdir/$pkgbase-$pkgver/build/linux/x64/release/bundle/lib" \
-    "$pkgdir/usr/lib/asus-linux-control/gui/"
-  install -dm755 "$pkgdir/usr/bin"
-  ln -s ../lib/asus-linux-control/gui/asus-linux-control \
+  install -Dm755 "$srcdir/$pkgbase-$pkgver/rust_ui/target/release/asus-linux-control" \
     "$pkgdir/usr/bin/asus-linux-control"
   install -Dm644 "$srcdir/$pkgbase-$pkgver/packaging/linux/asus-linux-control.desktop" \
     "$pkgdir/usr/share/applications/asus-linux-control.desktop"

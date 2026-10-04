@@ -3,18 +3,14 @@
 ## Архитектура
 
 ```
-Flutter App
-    │ FFI (flutter_rust_bridge)
-    ▼
-rust_core
-    ├─ Performance mode ──────────────────────────── sysfs (direct, read-only)
-    │
-    ├─ TDP (sustained/boost) ── D-Bus ──► asusd (xyz.ljones.Asusd)
+asus-linux-control (rust_ui, egui)
+    ├─ Performance mode, TDP, battery limit, fan curves ── D-Bus ──► asusd (xyz.ljones.Asusd)
     │                                         │ персистентно, знает min/max с железа
     │
-    └─ Battery limit ──────── D-Bus ──► asus-control-daemon (root)
-                                             │ Polkit authorization
-                                             ▼ sysfs write
+    ├─ Temp limit, CPU boost, fan engine, updates ── D-Bus ──► asus-control-daemon (root)
+    │                                         │ Polkit authorization
+    │                                         ▼ sysfs write
+    └─ Fan RPM, temperatures ── rust_core ──► sysfs (read-only)
 ```
 
 ## Что установится

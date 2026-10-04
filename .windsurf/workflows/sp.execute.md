@@ -74,7 +74,7 @@ REFACTOR: Clean up
 
 **Specific Constitution Checks:**
 - [ ] Principle I (Hardware Safety): Safety validation in place?
-- [ ] Principle VI (Single Responsibility): File under 150/200 lines?
+- [ ] Principle VI (Single Responsibility): File under 200 lines?
 - [ ] Principle IV (Test-Before-Hardware): Tests before hardware code?
 
 ### 5. Update Plan
@@ -82,7 +82,7 @@ REFACTOR: Clean up
 **Mark task complete:**
 ```markdown
 - [x] **Step 1: Write the failing test** ✓
-  - Test written: `test/tdp_test.dart`
+  - Test written: `rust_ui/src/features/tdp.rs` (tests module)
   - Verified: fails with "function not defined"
 ```
 
@@ -181,22 +181,22 @@ Plan is **COMPLETE** when:
 
 **Plan Task:**
 ```markdown
-### Task 2: Read TDP Value from FFI
+### Task 2: Read TDP Value from asusd
 
 **Files:**
-- Modify: `lib/services/tdp_service.dart`
-- Test: `test/services/tdp_service_test.dart`
+- Modify: `rust_ui/src/backend/asusd.rs`
+- Test: `rust_ui/src/features/tdp.rs` (fake `TdpService`)
 
-- [ ] **Step 1: Write test for readTdp()**
-  - Mock FFI to return 35000
-  - Expect service to return 35
-  
+- [ ] **Step 1: Write test for load()**
+  - Fake service returns sustained 35 W
+  - Expect `TdpState::Loaded` with `sustained_w == 35`
+
 - [ ] **Step 2: Run test - expect FAIL**
 
-- [ ] **Step 3: Implement readTdp()**
-  - Call FFI
-  - Parse and divide by 1000
-  - Return integer
+- [ ] **Step 3: Implement get_tdp_config()**
+  - Read `CurrentValue` of `ppt_pl1_spl` over D-Bus
+  - Map into `TdpConfig`
+  - Return typed result
 
 - [ ] **Step 4: Run test - expect PASS**
 

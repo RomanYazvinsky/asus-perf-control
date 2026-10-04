@@ -1,4 +1,4 @@
-.PHONY: all build-rust build-flutter build-artifacts source-tarball check-rpmbuild check-makepkg package-rpm package-arch package-all run clean help
+.PHONY: all build-ui build-daemon build-artifacts source-tarball check-rpmbuild check-makepkg package-rpm package-arch package-all run debug test install clean help
 
 PACKAGE_NAME := asus-linux-control
 PACKAGE_VERSION := 0.0.1
@@ -10,19 +10,14 @@ ARCHBUILD_DIR := $(DIST_DIR)/arch
 # Default target
 all: run
 
-# Build Rust backend
-build-rust:
-	@echo "Building Rust backend..."
-	@cd rust_core && cargo build --release
-	@echo "✓ Rust backend built"
-
-# Build Flutter app (depends on Rust)
-build-flutter: build-rust
-	@echo "Building Flutter app..."
-	@flutter build linux --release
+# Build the desktop UI (rust_ui links rust_core)
+build-ui:
+	@echo "Building ASUS Linux Control UI..."
+	@cd rust_ui && cargo build --release
+	@echo "✓ UI built at rust_ui/target/release/asus-linux-control"
 
 # Build all local release artifacts required by native packages
-build-artifacts: build-daemon build-flutter
+build-artifacts: build-daemon build-ui
 	@echo "✓ Release artifacts ready"
 
 # Create source archive containing the release artifacts consumed by spec/PKGBUILD
@@ -30,7 +25,10 @@ source-tarball: build-artifacts
 	@echo "Creating source tarball..."
 	@rm -rf "$(DIST_DIR)/source"
 	@mkdir -p "$(DIST_DIR)/source/$(PACKAGE_NAME)-$(PACKAGE_VERSION)"
-	@tar --exclude='./.git' --exclude='./dist' --exclude='./.dart_tool' -cf - . | tar -C "$(DIST_DIR)/source/$(PACKAGE_NAME)-$(PACKAGE_VERSION)" --strip-components=1 -xf -
+	@tar --exclude='./.git' --exclude='./dist' \
+		--exclude='./rust_*/target/debug' --exclude='./rust_*/target/release/build' \
+		--exclude='./rust_*/target/release/deps' --exclude='./rust_*/target/release/incremental' \
+		--exclude='./rust_*/target/release/.fingerprint' -cf - . | tar -C "$(DIST_DIR)/source/$(PACKAGE_NAME)-$(PACKAGE_VERSION)" --strip-components=1 -xf -
 	@tar -C "$(DIST_DIR)/source" -czf "$(SOURCE_TARBALL)" "$(PACKAGE_NAME)-$(PACKAGE_VERSION)"
 	@echo "✓ Source tarball: $(SOURCE_TARBALL)"
 
@@ -64,20 +62,26 @@ package-arch: check-makepkg source-tarball
 # Build all native packages for supported package ecosystems
 package-all: package-rpm package-arch
 
-# Run Flutter app (depends on Rust)
-run: build-rust
-	@echo "Running Flutter app..."
-	@flutter run -d linux
+# Run the UI
+run:
+	@cd rust_ui && cargo run --release
 
-# Run in debug mode
-debug: build-rust
-	@flutter run -d linux --debug
+# Run in debug mode with backend call tracing
+debug:
+	@cd rust_ui && RUST_LOG=debug cargo run
+
+# Run unit tests of all crates
+test:
+	@cd rust_core && cargo test
+	@cd rust_ui && cargo test
+	@cd rust_daemon && cargo test
 
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
 	@cd rust_core && cargo clean
-	@flutter clean
+	@cd rust_ui && cargo clean
+	@cd rust_daemon && cargo clean
 	@rm -rf "$(DIST_DIR)"
 	@echo "✓ Clean complete"
 
@@ -96,15 +100,15 @@ install: build-daemon
 help:
 	@echo "ASUS Linux Control - Build Targets"
 	@echo ""
-	@echo "  make run          - Build Rust backend and run Flutter app"
-	@echo "  make build-flutter- Build release version"
-	@echo "  make build-artifacts - Build daemon + Flutter release bundle"
-	@echo "  make package-rpm    - Build Fedora/Bazzite RPM packages"
-	@echo "  make package-arch   - Build Arch/SteamOS pacman packages"
-	@echo "  make package-all    - Build RPM and pacman packages"
-	@echo "  make build-rust   - Build only Rust backend"
-	@echo "  make build-daemon - Build Rust daemon"
-	@echo "  make install      - Build and install daemon + rules"
-	@echo "  make debug        - Run in debug mode"
-	@echo "  make clean        - Clean all build artifacts"
-	@echo "  make help         - Show this help"
+	@echo "  make run             - Build and run the UI (release)"
+	@echo "  make debug           - Run the UI in debug mode with backend tracing"
+	@echo "  make test            - Run rust_core, rust_ui and rust_daemon tests"
+	@echo "  make build-ui        - Build the UI binary"
+	@echo "  make build-daemon    - Build Rust daemon"
+	@echo "  make build-artifacts - Build daemon + UI release binaries"
+	@echo "  make package-rpm     - Build Fedora/Bazzite RPM packages"
+	@echo "  make package-arch    - Build Arch/SteamOS pacman packages"
+	@echo "  make package-all     - Build RPM and pacman packages"
+	@echo "  make install         - Build and install daemon + rules"
+	@echo "  make clean           - Clean all build artifacts"
+	@echo "  make help            - Show this help"

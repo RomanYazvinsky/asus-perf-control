@@ -26,7 +26,7 @@ The D-Bus daemon has been **migrated from Python to Rust** for better performanc
 - Same polkit policies
 - Same D-Bus service name
 
-Your Flutter application requires **no changes**.
+The desktop application requires **no changes**.
 
 ## Migration Steps
 
@@ -202,7 +202,7 @@ rust_daemon/
 
 ## FAQs
 
-**Q: Do I need to change my Flutter app?**  
+**Q: Do I need to change the desktop app?**  
 A: No, the D-Bus interface is identical.
 
 **Q: Will polkit still work?**  

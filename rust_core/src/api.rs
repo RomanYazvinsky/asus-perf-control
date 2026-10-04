@@ -1,5 +1,5 @@
-// FFI API entry point for flutter_rust_bridge
-// This file defines the interface between Flutter and Rust
+// Hardware API used by the desktop UI
+// Synchronous sysfs reads and writes; privileged writes go through D-Bus daemons
 
 use crate::services::temp;
 pub use crate::services::steam_input::{SteamInputEvent, SteamInputStatus, UiInputCommand};
@@ -58,7 +58,6 @@ pub struct BatteryStatus {
 /// # Returns
 /// * `Ok(())` on success
 /// * `Err(String)` with error message on failure
-#[flutter_rust_bridge::frb(sync)]
 pub fn set_performance_mode(mode: i32) -> Result<(), String> {
     use crate::services::performance::PerformanceController;
 
@@ -71,7 +70,6 @@ pub fn set_performance_mode(mode: i32) -> Result<(), String> {
 /// # Returns
 /// * `Ok(i32)` - Current mode (0, 1, or 2)
 /// * `Err(String)` with error message on failure
-#[flutter_rust_bridge::frb(sync)]
 pub fn get_performance_mode() -> Result<i32, String> {
     use crate::services::performance::PerformanceController;
 
@@ -84,7 +82,6 @@ pub fn get_performance_mode() -> Result<i32, String> {
 // ============================================================================
 
 /// Get current sensor readings
-#[flutter_rust_bridge::frb(sync)]
 pub fn get_sensor_readings() -> Result<SensorReading, String> {
     let cpu_temp = temp::read_cpu_temp().ok().map(|t| t as f32);
     let gpu_temp = temp::read_gpu_temp().ok().map(|t| t as f32);
@@ -107,7 +104,6 @@ pub fn get_sensor_readings() -> Result<SensorReading, String> {
 // ============================================================================
 
 /// Set battery charge limit (0-100, 0 = no limit)
-#[flutter_rust_bridge::frb(sync)]
 pub fn set_battery_charge_limit(limit: i32) -> Result<(), String> {
     use crate::services::battery::BatteryController;
 
@@ -120,7 +116,6 @@ pub fn set_battery_charge_limit(limit: i32) -> Result<(), String> {
 }
 
 /// Get current battery charge limit (0-100, 0 = no limit)
-#[flutter_rust_bridge::frb(sync)]
 pub fn get_battery_charge_limit() -> Result<i32, String> {
     use crate::services::battery::BatteryController;
 
@@ -151,7 +146,6 @@ pub struct TdpConfig {
 
 /// Read current TDP limits and CPU thermal ceiling from hardware.
 /// Never fails — missing attributes produce None fields and is_supported=false.
-#[flutter_rust_bridge::frb(sync)]
 pub fn get_tdp_config() -> TdpConfig {
     use crate::services::tdp::TdpController;
 
@@ -176,7 +170,6 @@ pub fn get_tdp_config() -> TdpConfig {
 /// Apply CPU TDP limits and thermal ceiling.
 /// Pass -1 for any parameter to skip setting it.
 /// sustained_w: 5–54W, boost_w: 5–54W (must be >= sustained_w), temp_limit_c: 60–100°C
-#[flutter_rust_bridge::frb(sync)]
 pub fn set_tdp_config(sustained_w: i32, boost_w: i32, temp_limit_c: i32) -> Result<(), String> {
     use crate::services::tdp::TdpController;
 
@@ -241,7 +234,6 @@ pub fn set_tdp_config(sustained_w: i32, boost_w: i32, temp_limit_c: i32) -> Resu
 
 /// Fast check whether TDP control sysfs attributes exist.
 /// Use to gate UI visibility before loading full config.
-#[flutter_rust_bridge::frb(sync)]
 pub fn is_tdp_supported() -> bool {
     use crate::services::tdp::TdpController;
     TdpController::is_supported()
@@ -274,7 +266,6 @@ pub struct FanReading {
 }
 
 /// Get fan capabilities (discovered fans and their features)
-#[flutter_rust_bridge::frb(sync)]
 pub fn get_fan_capabilities() -> FanCapabilities {
     use crate::services::fan;
 
@@ -296,7 +287,6 @@ pub fn get_fan_capabilities() -> FanCapabilities {
 }
 
 /// Get current RPM readings for all fans
-#[flutter_rust_bridge::frb(sync)]
 pub fn get_fan_rpms() -> Vec<FanReading> {
     use crate::services::fan;
 
@@ -313,7 +303,6 @@ pub fn get_fan_rpms() -> Vec<FanReading> {
 }
 
 /// Get CPU temperature in Celsius
-#[flutter_rust_bridge::frb(sync)]
 pub fn get_cpu_temp() -> i32 {
     use crate::services::temp;
 
@@ -324,7 +313,6 @@ pub fn get_cpu_temp() -> i32 {
 }
 
 /// Get GPU temperature in Celsius
-#[flutter_rust_bridge::frb(sync)]
 pub fn get_gpu_temp() -> i32 {
     use crate::services::temp;
 
@@ -336,12 +324,10 @@ pub fn get_gpu_temp() -> i32 {
 
 // Placeholder functions for other user stories (to be implemented later)
 
-#[flutter_rust_bridge::frb(sync)]
 pub fn get_steam_input_status() -> SteamInputStatus {
     crate::services::steam_input::SteamInputPoller::new_stub().status()
 }
 
-#[flutter_rust_bridge::frb(sync)]
 pub fn poll_steam_input_events() -> Vec<SteamInputEvent> {
     let mut poller = crate::services::steam_input::SteamInputPoller::new_stub();
     poller.poll()

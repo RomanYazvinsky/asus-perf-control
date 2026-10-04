@@ -7,7 +7,7 @@ This directory contains installation scripts and permission configuration files 
 The tool uses a **D-Bus daemon with polkit authorization** for secure access to hardware:
 
 ```text
-Flutter App → Rust FFI → D-Bus → asus-control-daemon (root) → sysfs
+asus-linux-control (Rust UI) → D-Bus → asus-control-daemon (root) → sysfs
                             ↑
                       Polkit authorization
 ```

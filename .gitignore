@@ -48,6 +48,7 @@ app.*.map.json
 # Rust related
 rust_core/target/
 rust_daemon/target/
+rust_ui/target/
 rust_core/debug/
 rust_core/release/
 *.rs.bk
