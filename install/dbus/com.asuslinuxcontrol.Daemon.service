@@ -1,0 +1,6 @@
+[D-BUS Service]
+Name=com.asuslinuxcontrol.Daemon
+SystemdService=asus-control-daemon.service
+Exec=/usr/lib/asus-linux-control/asus-control-daemon
+User=root
+Environment="RUST_LOG=info"

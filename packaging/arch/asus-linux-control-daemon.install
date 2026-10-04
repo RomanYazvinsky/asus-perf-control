@@ -1,0 +1,12 @@
+post_install() {
+  systemctl daemon-reload
+  echo "Run 'sudo systemctl enable --now asus-control-daemon.service' to start ASUS Linux Control at boot."
+}
+
+post_upgrade() {
+  systemctl daemon-reload
+}
+
+post_remove() {
+  systemctl daemon-reload
+}

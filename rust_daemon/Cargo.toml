@@ -1,0 +1,40 @@
+[package]
+name = "asus-control-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "asus-control-daemon"
+path = "src/main.rs"
+
+[dependencies]
+# D-Bus
+# tokio, not the default async-io executor: method handlers use tokio::process/spawn.
+zbus = { version = "4.0", default-features = false, features = ["tokio"] }
+tokio = { version = "1.35", features = ["full"] }
+futures-util = "0.3"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
+evdev = "0.13"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# File I/O
+nix = { version = "0.27", features = ["process"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "z"  # Optimize for size
+
+[dev-dependencies]
+# p2p: in-process D-Bus connections for handler tests.
+zbus = { version = "4.0", default-features = false, features = ["tokio", "p2p"] }

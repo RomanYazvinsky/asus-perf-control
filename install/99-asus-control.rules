@@ -1,0 +1,20 @@
+# udev rules for ASUS Linux Control Tool
+# Grants access to ASUS WMI sysfs interfaces for non-root users
+#
+# SECURITY NOTE:
+# throttle_thermal_policy, dgpu_disable, panel_od, battery charge control,
+# and TDP are accessed via D-Bus daemon (asusd or our daemon) with polkit.
+# Direct sysfs access would bypass security checks.
+
+# Keyboard backlight
+SUBSYSTEM=="leds", DEVPATH=="*/asus::kbd_backlight/*", ATTR{brightness}="0666"
+
+# USB HID devices (Anime Matrix, RGB peripherals)
+# ASUS vendor ID: 0x0b05
+SUBSYSTEM=="usb", ATTR{idVendor}=="0b05", MODE="0666", GROUP="plugdev"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", MODE="0666", GROUP="plugdev"
+
+# hwmon interfaces (fans, temperatures)
+SUBSYSTEM=="hwmon", MODE="0444"
+SUBSYSTEM=="hwmon", ATTR{pwm*}="0666"
+SUBSYSTEM=="hwmon", ATTR{pwm*_enable}="0666"

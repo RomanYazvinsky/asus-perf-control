@@ -1,0 +1,52 @@
+_manage_hotkey_agent_for_graphical_users() {
+  local action="$1"
+  local runtime_dir uid user
+
+  for runtime_dir in /run/user/[0-9]*; do
+    [ -d "$runtime_dir" ] || continue
+    uid="${runtime_dir##*/}"
+    user="$(getent passwd "$uid" | cut -d: -f1)"
+    [ -n "$user" ] || continue
+
+    if timeout 5s runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user --quiet is-active graphical-session.target >/dev/null 2>&1; then
+      case "$action" in
+        refresh)
+          timeout 5s runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user daemon-reload >/dev/null 2>&1 || true
+          timeout 5s runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user restart asus-control-hotkey-agent.service >/dev/null 2>&1 || true
+          ;;
+        stop)
+          timeout 5s runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user stop asus-control-hotkey-agent.service >/dev/null 2>&1 || true
+          ;;
+        reload)
+          timeout 5s runuser -u "$user" -- env XDG_RUNTIME_DIR="$runtime_dir" systemctl --user daemon-reload >/dev/null 2>&1 || true
+          ;;
+      esac
+    fi
+  done
+
+  return 0
+}
+
+_refresh_system_hotkey_runtime() {
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl try-restart asus-control-daemon.service >/dev/null 2>&1 || true
+}
+
+post_install() {
+  _manage_hotkey_agent_for_graphical_users refresh
+  _refresh_system_hotkey_runtime
+}
+
+post_upgrade() {
+  _manage_hotkey_agent_for_graphical_users refresh
+  _refresh_system_hotkey_runtime
+}
+
+pre_remove() {
+  _manage_hotkey_agent_for_graphical_users stop
+}
+
+post_remove() {
+  _manage_hotkey_agent_for_graphical_users reload
+  _refresh_system_hotkey_runtime
+}

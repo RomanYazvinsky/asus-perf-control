@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "UI: Debug (CodeLLDB)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/rust_ui/target/debug/asus-linux-control",
+      "cwd": "${workspaceFolder}",
+      "env": { "RUST_LOG": "debug" },
+      "preLaunchTask": "Build and Check All"
+    }
+  ]
+}

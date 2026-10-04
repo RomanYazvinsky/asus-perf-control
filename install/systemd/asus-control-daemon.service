@@ -1,0 +1,13 @@
+[Unit]
+Description=ASUS Linux Control daemon
+After=dbus.service asusd.service
+
+[Service]
+Type=dbus
+BusName=com.asuslinuxcontrol.Daemon
+ExecStart=/usr/lib/asus-linux-control/asus-control-daemon
+Restart=on-failure
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,59 @@
+pkgbase=asus-linux-control
+pkgname=('asus-linux-control' 'asus-linux-control-gui' 'asus-linux-control-daemon')
+pkgver=0.0.1
+pkgrel=1
+pkgdesc='ASUS Linux Control GUI and privileged daemon'
+arch=('x86_64')
+url='https://github.com/asus-linux-control/asus-linux-control'
+license=('MIT')
+source=("$pkgbase-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package_asus-linux-control() {
+  pkgdesc='ASUS Linux Control meta package'
+  depends=('asus-linux-control-gui' 'asus-linux-control-daemon')
+}
+
+package_asus-linux-control-gui() {
+  pkgdesc='ASUS Linux Control desktop application'
+  # Loaded at runtime by the windowing/rendering stack (dlopen).
+  depends=('asus-linux-control-daemon' 'libxkbcommon' 'wayland' 'libglvnd')
+  optdepends=('vulkan-icd-loader: Vulkan rendering backend')
+  install=asus-linux-control-gui.install
+
+  install -Dm755 "$srcdir/$pkgbase-$pkgver/rust_ui/target/release/asus-linux-control" \
+    "$pkgdir/usr/bin/asus-linux-control"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/packaging/linux/asus-linux-control.desktop" \
+    "$pkgdir/usr/share/applications/asus-linux-control.desktop"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/packaging/linux/asus-linux-control.png" \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/asus-linux-control.png"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/packaging/linux/asus-linux-control.metainfo.xml" \
+    "$pkgdir/usr/share/metainfo/asus-linux-control.metainfo.xml"
+  install -Dm755 "$srcdir/$pkgbase-$pkgver/rust_daemon/target/release/asus-control-hotkey-agent" \
+    "$pkgdir/usr/lib/asus-linux-control/asus-control-hotkey-agent"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/install/systemd/asus-control-hotkey-agent.service" \
+    "$pkgdir/usr/lib/systemd/user/asus-control-hotkey-agent.service"
+  install -dm755 "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants"
+  ln -s ../asus-control-hotkey-agent.service \
+    "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/asus-control-hotkey-agent.service"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/install/systemd/asus-control-daemon.service.d/rog-hotkey.conf" \
+    "$pkgdir/usr/lib/systemd/system/asus-control-daemon.service.d/rog-hotkey.conf"
+}
+
+package_asus-linux-control-daemon() {
+  pkgdesc='ASUS Linux Control privileged system daemon'
+  install=asus-linux-control-daemon.install
+
+  install -Dm755 "$srcdir/$pkgbase-$pkgver/rust_daemon/target/release/asus-control-daemon" \
+    "$pkgdir/usr/lib/asus-linux-control/asus-control-daemon"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/install/systemd/asus-control-daemon.service" \
+    "$pkgdir/usr/lib/systemd/system/asus-control-daemon.service"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/install/dbus/com.asuslinuxcontrol.Daemon.service" \
+    "$pkgdir/usr/share/dbus-1/system-services/com.asuslinuxcontrol.Daemon.service"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/install/dbus/com.asuslinuxcontrol.Daemon.conf" \
+    "$pkgdir/usr/share/dbus-1/system.d/com.asuslinuxcontrol.Daemon.conf"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/install/dbus/com.asuslinuxcontrol.Daemon.policy" \
+    "$pkgdir/usr/share/polkit-1/actions/com.asuslinuxcontrol.Daemon.policy"
+  install -Dm644 "$srcdir/$pkgbase-$pkgver/install/99-asus-control.rules" \
+    "$pkgdir/usr/lib/udev/rules.d/99-asus-control.rules"
+}

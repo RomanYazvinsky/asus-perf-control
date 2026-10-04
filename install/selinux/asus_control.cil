@@ -1,0 +1,121 @@
+; SELinux policy module for the ASUS Linux Control privileged daemon.
+;
+; Without this module systemd runs the daemon (labelled lib_t) in the generic
+; init_t domain, which may not open device nodes, so the ROG/M4 key firmware
+; binding on /dev/hidrawN and the ASUS input event device are denied.
+;
+; The module gives the daemon its own confined domain, asus_control_t, and
+; grants only what the daemon does. Written in CIL so that it loads with plain
+; `semodule -i` and needs no selinux-policy-devel at build or install time.
+;
+; Install:  semodule -i asus_control.cil
+;           restorecon -RF /usr/lib/asus-linux-control /var/lib/asus-linux-control
+; Remove:   semodule -r asus_control
+
+(type asus_control_t)
+(type asus_control_exec_t)
+(type asus_control_var_lib_t)
+
+(roletype system_r asus_control_t)
+(roletype object_r asus_control_exec_t)
+(roletype object_r asus_control_var_lib_t)
+
+(typeattributeset domain (asus_control_t))
+(typeattributeset daemon (asus_control_t))
+(typeattributeset syslog_client_type (asus_control_t))
+(typeattributeset kernel_system_state_reader (asus_control_t))
+
+(typeattributeset file_type (asus_control_exec_t asus_control_var_lib_t))
+(typeattributeset non_auth_file_type (asus_control_exec_t asus_control_var_lib_t))
+(typeattributeset non_security_file_type (asus_control_exec_t asus_control_var_lib_t))
+(typeattributeset exec_type (asus_control_exec_t))
+(typeattributeset entry_type (asus_control_exec_t))
+(typeattributeset direct_init_entry (asus_control_exec_t))
+
+(filecon "/usr/lib/asus-linux-control/asus-control-daemon" file (system_u object_r asus_control_exec_t ((s0) (s0))))
+(filecon "/var/lib/asus-linux-control(/.*)?" any (system_u object_r asus_control_var_lib_t ((s0) (s0))))
+
+; --- Started by systemd (directly or through D-Bus activation) ---------------
+(typetransition init_t asus_control_exec_t process asus_control_t)
+(allow init_t asus_control_exec_t (file (getattr open read execute map ioctl lock)))
+(allow init_t asus_control_t (process (transition siginh rlimitinh noatsecure)))
+(allow asus_control_t asus_control_exec_t (file (entrypoint getattr open read execute execute_no_trans map ioctl lock)))
+(allow asus_control_t init_t (dbus (send_msg)))
+(allow init_t asus_control_t (dbus (send_msg)))
+(allow asus_control_t init_t (unix_stream_socket (getattr read write ioctl)))
+
+; --- Process basics (tokio runtime, child processes, std thread sizing) -------
+(allow asus_control_t self (process (fork sigchld sigkill signal signull getsched setsched setpgid getcap)))
+(allow asus_control_t self (capability (sys_admin sys_rawio)))
+(dontaudit asus_control_t self (capability (dac_override dac_read_search sys_ptrace sys_resource)))
+(allow asus_control_t self (dir (getattr open read search)))
+(allow asus_control_t self (file (getattr open read ioctl lock)))
+(allow asus_control_t self (lnk_file (getattr read)))
+(allow asus_control_t self (fifo_file (getattr open read write append ioctl lock)))
+(allow asus_control_t self (unix_stream_socket (create connect getattr getopt setopt read write shutdown ioctl)))
+(allow asus_control_t self (unix_dgram_socket (create connect getattr getopt setopt read write shutdown ioctl)))
+(allow asus_control_t cgroup_t (dir (getattr open search read)))
+(allow asus_control_t cgroup_t (file (getattr open read ioctl lock)))
+(allow asus_control_t proc_t (file (getattr open read ioctl lock)))
+
+; --- System bus: own com.asuslinuxcontrol.Daemon, ask polkit, talk to asusd ----
+(allow asus_control_t var_run_t (dir (getattr search)))
+(allow asus_control_t system_dbusd_var_run_t (dir (getattr open search)))
+(allow asus_control_t system_dbusd_var_run_t (sock_file (getattr open write append)))
+(allow asus_control_t system_dbusd_t (unix_stream_socket (connectto)))
+(allow asus_control_t system_dbusd_t (dbus (send_msg acquire_svc)))
+(allow system_dbusd_t asus_control_t (dbus (send_msg)))
+(allow asus_control_t system_dbusd_var_lib_t (dir (getattr open search)))
+(allow asus_control_t system_dbusd_var_lib_t (file (getattr open read ioctl lock)))
+(allow asus_control_t system_dbusd_var_lib_t (lnk_file (getattr read)))
+(allow asus_control_t policykit_t (dbus (send_msg)))
+(allow policykit_t asus_control_t (dbus (send_msg)))
+; GUI, hotkey agent and asusd all run unconfined.
+(allow asus_control_t unconfined_t (dbus (send_msg)))
+(allow unconfined_t asus_control_t (dbus (send_msg)))
+
+; --- Hardware control through sysfs: asus-nb-wmi, hwmon fans, cpufreq boost,
+;     platform_profile, battery charge limit, PCI config used by ryzenadj -----
+(allow asus_control_t sysfs_t (dir (getattr open read search)))
+(allow asus_control_t sysfs_t (lnk_file (getattr read)))
+(allow asus_control_t sysfs_t (file (getattr open read write append ioctl lock)))
+
+; --- ROG/M4 key: firmware binding over hidraw (hidapi + libudev enumeration)
+;     and reading the asus-nb-wmi input event device -------------------------
+(allow asus_control_t device_t (dir (getattr open read search)))
+(allow asus_control_t device_t (lnk_file (getattr read)))
+(allow asus_control_t usb_device_t (chr_file (getattr open read write ioctl lock)))
+(allow asus_control_t event_device_t (chr_file (getattr open read write ioctl lock)))
+(allow asus_control_t udev_var_run_t (dir (getattr open read search)))
+(allow asus_control_t udev_var_run_t (file (getattr open read ioctl lock)))
+(allow asus_control_t udev_var_run_t (lnk_file (getattr read)))
+
+; --- Persistent state in /var/lib/asus-linux-control -------------------------
+(allow asus_control_t var_lib_t (dir (getattr search open read write add_name remove_name)))
+(typetransition asus_control_t var_lib_t dir asus_control_var_lib_t)
+(allow asus_control_t asus_control_var_lib_t (dir (create getattr setattr open read search write add_name remove_name rename rmdir ioctl lock)))
+(allow asus_control_t asus_control_var_lib_t (file (create getattr setattr open read write append rename unlink link ioctl lock)))
+
+; --- Configuration read: /etc/os-release (update backend detection) ----------
+(allow asus_control_t etc_t (dir (getattr open read search)))
+(allow asus_control_t etc_t (file (getattr open read ioctl lock map)))
+(allow asus_control_t etc_t (lnk_file (getattr read)))
+
+; --- External helpers --------------------------------------------------------
+; Backend detection probes every $PATH entry for pacman/rpm-ostree. snapd adds
+; /var/lib/snapd/snap/bin to the system PATH; the probe there is harmless, so
+; keep it out of the audit log instead of granting access.
+(optional asus_control_snapd_path_probe
+    (dontaudit asus_control_t snappy_var_lib_t (dir (getattr search)))
+)
+; ryzenadj (/usr/local/bin) runs inside this domain for the Ryzen temperature limit.
+(allow asus_control_t bin_t (dir (getattr open read search)))
+(allow asus_control_t bin_t (lnk_file (getattr read)))
+(allow asus_control_t bin_t (file (getattr open read execute execute_no_trans map ioctl lock)))
+; dnf / dnf5 / rpm-ostree switch to the package manager domain for update checks and upgrades.
+(typetransition asus_control_t rpm_exec_t process rpm_t)
+(allow asus_control_t rpm_exec_t (file (getattr open read execute map ioctl lock)))
+(allow asus_control_t rpm_t (process (transition sigkill signal signull)))
+(allow rpm_t asus_control_t (process (sigchld)))
+(allow rpm_t asus_control_t (fd (use)))
+(allow rpm_t asus_control_t (fifo_file (getattr read write append ioctl lock)))

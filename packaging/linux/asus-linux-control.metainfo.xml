@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.asuslinuxcontrol.App</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>ASUS Linux Control</name>
+  <summary>Control ASUS laptop hardware on Linux</summary>
+  <description>
+    <p>
+      ASUS Linux Control provides a native desktop interface and privileged
+      daemon for ASUS laptop hardware controls.
+    </p>
+  </description>
+  <launchable type="desktop-id">asus-linux-control.desktop</launchable>
+  <provides>
+    <binary>asus-linux-control</binary>
+  </provides>
+</component>

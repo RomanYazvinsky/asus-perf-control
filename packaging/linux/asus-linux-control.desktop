@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ASUS Linux Control
+Comment=Control ASUS laptop hardware on Linux
+Exec=asus-linux-control
+Icon=asus-linux-control
+Terminal=false
+Categories=System;Settings;
+StartupNotify=true
+StartupWMClass=asus-linux-control
