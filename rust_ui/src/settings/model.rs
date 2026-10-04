@@ -150,8 +150,9 @@ pub struct TdpDesiredSettings {
     pub power_limits_enabled: bool,
     pub sustained_w: i64,
     pub boost_w: i64,
-    pub temp_limit_enabled: bool,
-    pub temp_limit_c: i64,
+    /// CPU temperature limit per platform profile ("quiet", "balanced", "performance");
+    /// 0 means no limit. Profiles without an entry are left as the daemon has them.
+    pub profile_temp_limits: BTreeMap<String, i64>,
 }
 
 impl TdpDesiredSettings {
@@ -166,14 +167,20 @@ impl TdpDesiredSettings {
             ),
             sustained_w: read_ranged_int(json, "sustainedW", "hardware.tdp.sustainedW", (0, 150), 0, issues),
             boost_w: read_ranged_int(json, "boostW", "hardware.tdp.boostW", (0, 150), 0, issues),
-            temp_limit_enabled: read_bool(
-                json,
-                "tempLimitEnabled",
-                "hardware.tdp.tempLimitEnabled",
-                false,
-                issues,
-            ),
-            temp_limit_c: read_ranged_int(json, "tempLimitC", "hardware.tdp.tempLimitC", (0, 105), 0, issues),
+            // Legacy tempLimitEnabled/tempLimitC applied to whichever profile was active,
+            // so they cannot be mapped to a profile and are dropped.
+            profile_temp_limits: read_optional_map(json, "profileTempLimits", "hardware.tdp.profileTempLimits", issues)
+                .map(|map| {
+                    // Invalid entries are skipped so they cannot clear a profile's limit.
+                    map.keys()
+                        .filter_map(|profile| {
+                            let path = format!("hardware.tdp.profileTempLimits.{profile}");
+                            read_optional_ranged_int(&map, profile, &path, (0, 105), issues)
+                                .map(|limit| (profile.clone(), limit))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -182,8 +189,7 @@ impl TdpDesiredSettings {
             "powerLimitsEnabled": self.power_limits_enabled,
             "sustainedW": self.sustained_w,
             "boostW": self.boost_w,
-            "tempLimitEnabled": self.temp_limit_enabled,
-            "tempLimitC": self.temp_limit_c,
+            "profileTempLimits": self.profile_temp_limits,
         })
     }
 }

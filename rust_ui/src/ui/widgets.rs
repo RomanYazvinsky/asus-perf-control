@@ -253,6 +253,28 @@ pub fn status_row(ui: &mut Ui, label: &str, value: &str) {
 }
 
 /// Silent / Balanced / Turbo tabs (former `ProfileTabBar`). Returns the clicked mode.
+pub fn profile_label(mode: i32) -> &'static str {
+    match mode {
+        0 => "Silent",
+        2 => "Turbo",
+        _ => "Balanced",
+    }
+}
+
+/// Explains that the profile tabs choose what is edited, not what is active.
+pub fn editing_profile_hint(ui: &mut Ui, editing_mode: i32, active_mode: Option<i32>) {
+    let text = match active_mode {
+        Some(active) if active == editing_mode => format!("Editing {} — the active profile", profile_label(editing_mode)),
+        Some(active) => format!(
+            "Editing {} — takes effect when that profile is active (now: {})",
+            profile_label(editing_mode),
+            profile_label(active)
+        ),
+        None => format!("Editing {}", profile_label(editing_mode)),
+    };
+    small(ui, &text);
+}
+
 pub fn profile_tabs(ui: &mut Ui, selected_mode: i32) -> Option<i32> {
     let selected_mode = if (0..=2).contains(&selected_mode) { selected_mode } else { 1 };
     let mut clicked = None;

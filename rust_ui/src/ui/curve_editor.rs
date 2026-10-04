@@ -1,7 +1,8 @@
 //! 8-point fan curve editor (former `FanCurveEditor`).
 //!
 //! Mouse: drag a point. Keyboard / gamepad while focused: `[` `]` or PageUp/PageDown select the
-//! previous/next point, ←/→ move its temperature, ↑/↓ its speed. Apply sends the curve.
+//! previous/next point, ←/→ move its temperature, ↑/↓ its speed. The screen's Apply sends
+//! [`CurveEditor::edited_points`].
 
 use egui::{pos2, vec2, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui};
 
@@ -48,6 +49,11 @@ impl CurveEditor {
         }
     }
 
+    /// The local curve when it differs from the last one taken from the state.
+    pub fn edited_points(&self) -> Option<Vec<FanCurvePoint>> {
+        (self.points != self.source).then(|| self.points.clone())
+    }
+
     /// Gamepad / keyboard curve commands.
     pub fn handle_command(&mut self, command: UiInputCommand) {
         if self.points.is_empty() {
@@ -73,40 +79,47 @@ impl CurveEditor {
         update_point_position(&mut self.points, index, point.temp_c + delta_temp, point.speed_percent + delta_speed);
     }
 
-    /// Draws the editor. Returns the edited curve when Apply is pressed.
+    /// Draws the editor; edits stay local until the screen applies them.
     pub fn show(
         &mut self,
         ui: &mut Ui,
         curve: &[FanCurvePoint],
         read_only: bool,
-        current_speed: Option<f64>,
+        current_temp: Option<f64>,
         commands: &[UiInputCommand],
-    ) -> Option<Vec<FanCurvePoint>> {
+    ) {
         self.sync(curve);
-        let mut applied = None;
         widgets::card(ui, |ui| {
             ui.horizontal(|ui| {
                 widgets::heading(ui, "Fan Curve (8 points)");
-                if !read_only {
+                if self.edited_points().is_some() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Apply").clicked() {
-                            applied = Some(self.points.clone());
-                        }
+                        ui.label(RichText::new("● Unsaved").small().color(theme::WARNING));
                     });
                 }
             });
             ui.add_space(12.0);
-            self.chart(ui, read_only, current_speed, commands);
+            self.chart(ui, read_only, current_temp, commands);
             ui.add_space(12.0);
+            match current_temp {
+                Some(temp) => ui.label(
+                    RichText::new(format!(
+                        "Now {}°C: fan at {}% on this curve",
+                        temp.round(),
+                        speed_at(&self.points, temp).round()
+                    ))
+                    .color(theme::WARNING),
+                ),
+                None => ui.label(RichText::new("Current temperature unavailable").color(theme::ON_SURFACE_VARIANT)),
+            };
             if self.selected.is_some() {
                 ui.label(self.selected_label());
             }
-            widgets::small(ui, "Temperature (°C) → Fan Speed (%)");
+            widgets::small(ui, "X: temperature (°C), Y: fan speed (%)");
         });
-        applied
     }
 
-    fn chart(&mut self, ui: &mut Ui, read_only: bool, current_speed: Option<f64>, commands: &[UiInputCommand]) {
+    fn chart(&mut self, ui: &mut Ui, read_only: bool, current_temp: Option<f64>, commands: &[UiInputCommand]) {
         let size = vec2(ui.available_width(), CHART_HEIGHT);
         let sense = if read_only { Sense::hover() } else { Sense::click_and_drag() };
         let (outer, response) = ui.allocate_exact_size(size, sense);
@@ -180,9 +193,17 @@ impl CurveEditor {
         }
         painter.rect_stroke(plot, 0.0, Stroke::new(1.0, theme::OUTLINE.gamma_multiply(0.3)), egui::StrokeKind::Inside);
 
-        if let Some(speed) = current_speed.filter(|s| (MIN_Y..=MAX_Y).contains(s)) {
-            let y = to_screen(&FanCurvePoint::new(MIN_X, speed)).y;
-            painter.add(Shape::dashed_line(&[pos2(plot.left(), y), pos2(plot.right(), y)], Stroke::new(2.0, theme::WARNING), 5.0, 5.0));
+        // Current temperature: vertical marker plus where it meets the curve.
+        let current = current_temp
+            .filter(|t| (MIN_X..=MAX_X).contains(t))
+            .map(|t| to_screen(&FanCurvePoint::new(t, speed_at(&self.points, t))));
+        if let Some(at) = current {
+            painter.add(Shape::dashed_line(
+                &[pos2(at.x, plot.top()), pos2(at.x, plot.bottom())],
+                Stroke::new(2.0, theme::WARNING),
+                5.0,
+                5.0,
+            ));
         }
 
         let screen: Vec<Pos2> = self.points.iter().map(to_screen).collect();
@@ -198,6 +219,9 @@ impl CurveEditor {
             let stroke_width = if self.selected == Some(i) { 4.0 } else { 2.0 };
             painter.circle(*pos, 8.0, color, Stroke::new(stroke_width, theme::SURFACE));
         }
+        if let Some(at) = current {
+            painter.circle(at, 5.0, theme::WARNING, Stroke::new(2.0, theme::SURFACE));
+        }
         if response.has_focus() {
             painter.rect_stroke(outer, 4.0, Stroke::new(2.0, theme::PRIMARY), egui::StrokeKind::Inside);
         }
@@ -205,6 +229,27 @@ impl CurveEditor {
             ui.label(RichText::new("Read only").small());
         }
     }
+}
+
+/// Fan speed the curve gives at `temp`: linear between points, flat beyond the ends.
+fn speed_at(points: &[FanCurvePoint], temp: f64) -> f64 {
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        return 0.0;
+    };
+    if temp <= first.temp_c {
+        return first.speed_percent;
+    }
+    for pair in points.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if temp <= b.temp_c {
+            let span = b.temp_c - a.temp_c;
+            if span <= 0.0 {
+                return b.speed_percent;
+            }
+            return a.speed_percent + (temp - a.temp_c) / span * (b.speed_percent - a.speed_percent);
+        }
+    }
+    last.speed_percent
 }
 
 fn nearest_point(points: &[FanCurvePoint], x: f64, y: f64) -> Option<usize> {
@@ -245,6 +290,20 @@ mod tests {
     use crate::features::fan::default_fan_curve;
 
     #[test]
+    fn speed_at_interpolates_and_clamps() {
+        let points = vec![
+            FanCurvePoint::new(30.0, 10.0),
+            FanCurvePoint::new(50.0, 30.0),
+            FanCurvePoint::new(70.0, 90.0),
+        ];
+        assert_eq!(speed_at(&points, 20.0), 10.0);
+        assert_eq!(speed_at(&points, 40.0), 20.0);
+        assert_eq!(speed_at(&points, 60.0), 60.0);
+        assert_eq!(speed_at(&points, 95.0), 90.0);
+        assert_eq!(speed_at(&[], 50.0), 0.0);
+    }
+
+    #[test]
     fn grabs_only_nearby_points() {
         let points = default_fan_curve();
         assert_eq!(nearest_point(&points, 41.0, 51.0), Some(2));
@@ -275,9 +334,11 @@ mod tests {
         let mut editor = CurveEditor::default();
         let curve = default_fan_curve();
         editor.sync(&curve);
+        assert_eq!(editor.edited_points(), None);
         editor.handle_command(UiInputCommand::CurveSpeedUp);
         editor.sync(&curve);
         assert_ne!(editor.points, curve);
+        assert_eq!(editor.edited_points(), Some(editor.points.clone()));
 
         let mut changed = curve.clone();
         changed[0].speed_percent = 10.0;

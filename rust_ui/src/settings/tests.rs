@@ -37,8 +37,7 @@ fn saves_and_loads_formatted_json() {
                 power_limits_enabled: true,
                 sustained_w: 25,
                 boost_w: 35,
-                temp_limit_enabled: true,
-                temp_limit_c: 85,
+                profile_temp_limits: BTreeMap::from([("balanced".into(), 85), ("quiet".into(), 0)]),
             }),
             cpu_boost_mode: Some("efficient_enabled".into()),
             battery_charge_limit: Some(80),
@@ -119,7 +118,7 @@ fn keeps_valid_values_when_some_fields_are_invalid() {
 fn reports_issues_with_dart_compatible_paths() {
     let json = json!({
         "ui": {"selectedNavigationIndex": "bad"},
-        "hardware": {"batteryChargeLimit": 130, "tdp": {"tempLimitC": 1.5}}
+        "hardware": {"batteryChargeLimit": 130, "tdp": {"profileTempLimits": {"quiet": 1.5}}}
     });
     let mut issues = Vec::new();
 
@@ -129,7 +128,7 @@ fn reports_issues_with_dart_compatible_paths() {
         issues,
         vec![
             "ui.selectedNavigationIndex invalidType actual=String",
-            "hardware.tdp.tempLimitC invalidType actual=double",
+            "hardware.tdp.profileTempLimits.quiet invalidType actual=double",
             "hardware.batteryChargeLimit outOfRange actual=130 expected=0..100",
         ]
     );

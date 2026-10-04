@@ -135,18 +135,28 @@ impl BatteryScreen {
             });
         });
         ui.add_space(16.0);
+    }
 
+    /// Whether the sticky action bar is shown.
+    pub fn has_actions(&self) -> bool {
+        self.has_loaded_data && !matches!(self.state, BatteryState::Unsupported)
+    }
+
+    /// Apply button, drawn in the sticky bar below the scroll area.
+    pub fn actions(&mut self, ui: &mut Ui, cx: &mut ScreenCtx) {
         let busy = self.task.is_some();
-        let label = if busy { "Applying..." } else { "💾 Apply" };
-        if widgets::primary_button(ui, label, !busy).clicked() {
-            let limit = self.charge_limit.round() as i32;
-            self.state = BatteryState::Loading;
-            let (services, store) = (cx.services.clone(), cx.store.clone());
-            self.task = Some(cx.rt.spawn(async move { battery::set_limit(&*services, &*store, limit).await }));
-        }
-        if let BatteryState::Loaded { charge_limit } = self.state {
-            ui.add_space(12.0);
-            ui.vertical_centered(|ui| widgets::muted(ui, format!("Current limit: {charge_limit}%")));
-        }
+        ui.horizontal(|ui| {
+            let label = if busy { "Applying..." } else { "💾 Apply" };
+            if widgets::primary_button(ui, label, !busy).clicked() {
+                let limit = self.charge_limit.round() as i32;
+                self.state = BatteryState::Loading;
+                let (services, store) = (cx.services.clone(), cx.store.clone());
+                self.task = Some(cx.rt.spawn(async move { battery::set_limit(&*services, &*store, limit).await }));
+            }
+            if let BatteryState::Loaded { charge_limit } = self.state {
+                ui.add_space(12.0);
+                widgets::muted(ui, format!("Current limit: {charge_limit}%"));
+            }
+        });
     }
 }

@@ -20,7 +20,8 @@ pub trait FanService: Send + Sync {
     async fn capabilities(&self) -> Result<Vec<FanInfo>>;
     async fn fan_rpms(&self) -> Result<Vec<(FanId, Option<u32>)>>;
     async fn temperatures(&self) -> Result<FanTemperatures>;
-    async fn set_active_profile(&self, profile: PerfProfile) -> Result<()>;
+    /// asusd platform profile currently in effect.
+    async fn active_profile(&self) -> Result<PerfProfile>;
     async fn asusd_curves(&self, profile: PerfProfile) -> Result<Vec<FanCurveData>>;
     async fn set_asusd_curve(&self, profile: PerfProfile, fan: FanId, points: &[FanCurvePoint]) -> Result<()>;
     async fn set_constant_speed(&self, profile: PerfProfile, fan: FanId, speed_percent: i64) -> Result<()>;
@@ -43,7 +44,9 @@ pub struct FanLoaded {
     pub gpu_temp_c: i32,
     pub asusd_curves: FanProfileCurves,
     pub selected_fan: FanId,
+    /// Profile whose curves are being edited; does not switch the active profile.
     pub selected_profile: PerfProfile,
+    pub active_profile: Option<PerfProfile>,
     pub control_modes: BTreeMap<FanId, FanControlMode>,
     pub dynamic_engine_running: bool,
     pub engine_config: Option<FanEngineConfig>,
@@ -221,10 +224,6 @@ async fn load_inner(service: &dyn FanService, store: &dyn AppSettingsStore) -> R
             dynamic_engine_running = true;
         }
     }
-    if selected_profile != PerfProfile::Balanced {
-        service.set_active_profile(selected_profile).await?;
-    }
-
     let control_modes = if saved_modes.is_empty() {
         let mode = if dynamic_engine_running {
             FanControlMode::DynamicEngine
@@ -244,6 +243,7 @@ async fn load_inner(service: &dyn FanService, store: &dyn AppSettingsStore) -> R
         asusd_curves,
         selected_fan,
         selected_profile,
+        active_profile: service.active_profile().await.ok(),
         control_modes,
         dynamic_engine_running,
         engine_config: saved_config,
@@ -260,6 +260,7 @@ pub struct FanRefresh {
     pub fan_rpms: BTreeMap<FanId, u32>,
     pub temperatures: FanTemperatures,
     pub dynamic_engine_running: bool,
+    pub active_profile: Option<PerfProfile>,
 }
 
 pub async fn refresh(service: &dyn FanService) -> Result<FanRefresh> {
@@ -267,6 +268,7 @@ pub async fn refresh(service: &dyn FanService) -> Result<FanRefresh> {
         fan_rpms: rpm_map(service.fan_rpms().await?),
         temperatures: service.temperatures().await.unwrap_or_default(),
         dynamic_engine_running: service.is_dynamic_engine_running().await.unwrap_or(false),
+        active_profile: service.active_profile().await.ok(),
     })
 }
 
@@ -276,6 +278,9 @@ pub fn apply_refresh(state: &mut FanLoaded, refresh: FanRefresh) {
     state.cpu_temp_c = refresh.temperatures.cpu_temp_c;
     state.gpu_temp_c = refresh.temperatures.gpu_temp_c;
     state.dynamic_engine_running = refresh.dynamic_engine_running;
+    if refresh.active_profile.is_some() {
+        state.active_profile = refresh.active_profile;
+    }
     if !refresh.dynamic_engine_running {
         for mode in state.control_modes.values_mut() {
             if *mode == FanControlMode::DynamicEngine {
@@ -299,25 +304,16 @@ pub fn select_fan(store: &dyn AppSettingsStore, state: &FanLoaded, fan: FanId) -
     Ok(next)
 }
 
-pub async fn select_profile(
-    service: &dyn FanService,
-    store: &dyn AppSettingsStore,
-    state: FanLoaded,
-    profile: PerfProfile,
-) -> FanState {
-    let result: Result<FanLoaded> = async {
-        service.set_active_profile(profile).await?;
-        let next = FanLoaded {
-            selected_profile: profile,
-            ..state
-        };
-        save_fan_settings(store, &next, next.engine_config.as_ref())?;
-        Ok(next)
+/// Picks which profile's curves are edited; the active platform profile is left alone.
+pub fn select_profile(store: &dyn AppSettingsStore, state: FanLoaded, profile: PerfProfile) -> FanState {
+    let next = FanLoaded {
+        selected_profile: profile,
+        ..state
+    };
+    match save_fan_settings(store, &next, next.engine_config.as_ref()) {
+        Ok(()) => FanState::Loaded(next),
+        Err(e) => fan_error("Failed to save selected profile", e),
     }
-    .await;
-    result
-        .map(FanState::Loaded)
-        .unwrap_or_else(|e| fan_error("Failed to switch performance profile", e))
 }
 
 pub async fn set_asusctl_curve(
@@ -443,6 +439,31 @@ pub async fn update_dynamic_curve(
         .unwrap_or_else(|e| fan_error("Failed to update dynamic curve", e))
 }
 
+/// Applies edited curves of several fans in order; stops at the first failure.
+/// Dynamic-engine fans update the engine, the others the selected profile's asusd curve.
+pub async fn apply_curves(
+    service: &dyn FanService,
+    store: &dyn AppSettingsStore,
+    state: FanLoaded,
+    curves: Vec<(FanId, Vec<FanCurvePoint>)>,
+) -> FanState {
+    let mut state = state;
+    for (fan, curve) in curves {
+        let next = match state.control_mode(fan) {
+            FanControlMode::DynamicEngine => update_dynamic_curve(service, store, state, fan, curve).await,
+            _ => {
+                let profile = state.selected_profile;
+                set_asusctl_curve(service, store, state, fan, profile, curve).await
+            }
+        };
+        match next {
+            FanState::Loaded(loaded) => state = loaded,
+            other => return other,
+        }
+    }
+    FanState::Loaded(state)
+}
+
 pub async fn reset_to_defaults(
     service: &dyn FanService,
     store: &dyn AppSettingsStore,
@@ -476,7 +497,14 @@ pub async fn reset_to_defaults(
 
 /// Returns the result state, or `(error, previous)` so the screen can show the error and restore.
 pub async fn max_speed_test(service: &dyn FanService, state: FanLoaded, fan: FanId) -> Result<FanState, Box<(String, FanLoaded)>> {
-    match service.run_max_speed_test(state.selected_profile, fan).await {
+    // The edited profile may not be active; test on the one actually driving the fans.
+    let profile = service
+        .active_profile()
+        .await
+        .ok()
+        .or(state.active_profile)
+        .unwrap_or(state.selected_profile);
+    match service.run_max_speed_test(profile, fan).await {
         Ok(max_rpm) => Ok(FanState::MaxSpeedResult {
             previous: state,
             fan,

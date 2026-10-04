@@ -21,14 +21,9 @@ pub struct TdpScreen {
     has_loaded_data: bool,
     power_limits_enabled: bool,
     temp_limit_enabled: bool,
-}
-
-fn profile_label(mode: i32) -> &'static str {
-    match mode {
-        0 => "Silent",
-        2 => "Turbo",
-        _ => "Balanced",
-    }
+    // Last loaded profiles; kept while reloading so the action bar does not flicker.
+    editing_mode: i32,
+    active_mode: i32,
 }
 
 impl TdpScreen {
@@ -46,6 +41,8 @@ impl TdpScreen {
             has_loaded_data: false,
             power_limits_enabled: false,
             temp_limit_enabled: false,
+            editing_mode: 1,
+            active_mode: 1,
         };
         screen.load(cx);
         screen
@@ -110,6 +107,41 @@ impl TdpScreen {
         self.has_loaded_data = true;
         self.power_limits_enabled = loaded.power_limits_enabled;
         self.temp_limit_enabled = loaded.temp_limit_enabled;
+        self.editing_mode = loaded.editing_mode;
+        self.active_mode = loaded.active_performance_mode;
+    }
+
+    /// Whether the sticky action bar is shown.
+    pub fn has_actions(&self) -> bool {
+        self.has_loaded_data && !matches!(self.state, TdpState::Unsupported)
+    }
+
+    /// Apply / reload buttons, drawn in the sticky bar below the scroll area.
+    pub fn actions(&mut self, ui: &mut Ui, cx: &mut ScreenCtx) {
+        let busy = self.task.is_some();
+        let editing_mode = self.editing_mode;
+        ui.horizontal(|ui| {
+            let apply_label = if editing_mode == self.active_mode { "✔ Apply" } else { "✔ Save" };
+            if widgets::primary_button(ui, apply_label, !busy).clicked() {
+                let request = SetTdpRequest {
+                    editing_mode,
+                    apply_power_limits: self.power_limits_enabled,
+                    temp_limit_enabled: self.temp_limit_enabled,
+                    sustained_w: self.sustained_w.round() as i32,
+                    boost_w: self.boost_w.round() as i32,
+                    temp_limit_c: self.temp_limit_c.round() as i32,
+                };
+                let (services, store) = (cx.services.clone(), cx.store.clone());
+                self.start(cx, async move { tdp::set_tdp(&*services, &*store, request).await });
+            }
+            if widgets::outlined_button(ui, "⟲ Reload from Hardware", !busy).clicked() {
+                let services = cx.services.clone();
+                self.start(cx, async move { tdp::reload(&*services, Some(editing_mode)).await });
+            }
+            if busy {
+                ui.spinner();
+            }
+        });
     }
 
     pub fn ui(&mut self, ui: &mut Ui, cx: &mut ScreenCtx) {
@@ -130,18 +162,31 @@ impl TdpScreen {
     }
 
     fn controls(&mut self, ui: &mut Ui, cx: &mut ScreenCtx) {
-        let active_mode = self.loaded().map_or(1, |l| l.active_performance_mode);
-        let busy = self.task.is_some();
-        let can_apply = self.power_limits_enabled || self.temp_limit_enabled;
+        let (active_mode, editing_mode) = self
+            .loaded()
+            .map_or((1, 1), |l| (l.active_performance_mode, l.editing_mode));
+        let editing_active = editing_mode == active_mode;
 
-        if let Some(mode) = widgets::profile_tabs(ui, active_mode) {
-            let (services, store) = (cx.services.clone(), cx.store.clone());
-            self.start(cx, async move { tdp::select_profile(&*services, &*store, mode).await });
-            return;
+        if let Some(mode) = widgets::profile_tabs(ui, editing_mode) {
+            if mode != editing_mode {
+                let services = cx.services.clone();
+                self.start(cx, async move { tdp::select_profile(&*services, mode).await });
+                return;
+            }
         }
+        widgets::editing_profile_hint(ui, editing_mode, Some(active_mode));
         ui.add_space(8.0);
         ui.label(RichText::new("CPU Power Limits").size(24.0));
         ui.label("Configure sustained and boost TDP limits. Values are persistent — asusd saves them to its profile.");
+        if !editing_active {
+            widgets::small(
+                ui,
+                format!(
+                    "asusd only edits power limits of the active profile — switch to {} to change them.",
+                    widgets::profile_label(editing_mode)
+                ),
+            );
+        }
         ui.add_space(8.0);
 
         let power_subtitle = if self.power_limits_enabled {
@@ -149,13 +194,17 @@ impl TdpScreen {
         } else {
             "Power limits will not be changed"
         };
-        if widgets::switch_card(ui, "Enable Power Limits", power_subtitle, &mut self.power_limits_enabled)
-            && !self.power_limits_enabled
-        {
+        let power_toggled = ui
+            .add_enabled_ui(editing_active, |ui| {
+                widgets::switch_card(ui, "Enable Power Limits", power_subtitle, &mut self.power_limits_enabled)
+            })
+            .inner;
+        if power_toggled && !self.power_limits_enabled {
             let previous = self.loaded();
             let (services, store) = (cx.services.clone(), cx.store.clone());
             self.start(cx, async move { tdp::clear_power_limits(&*services, &*store, previous).await });
         }
+        let power_editable = editing_active && self.power_limits_enabled;
         ui.add_space(8.0);
         widgets::slider_card(
             ui,
@@ -165,7 +214,7 @@ impl TdpScreen {
             self.max_w,
             "W",
             "Long-term power limit under sustained load",
-            self.power_limits_enabled,
+            power_editable,
         );
         // Boost exists only when asusd exposes ppt_pl2_sppt.
         if self.max_boost_w > 0.0 {
@@ -179,22 +228,22 @@ impl TdpScreen {
                 self.max_boost_w,
                 "W",
                 "Short-burst power limit (PL2/SPPT)",
-                self.power_limits_enabled,
+                power_editable,
             );
         }
 
         ui.add_space(16.0);
         ui.label(RichText::new("CPU Temperature Limit").size(24.0));
         ui.horizontal(|ui| {
-            ui.label("Active profile");
-            widgets::chip(ui, "⏱", profile_label(active_mode));
+            ui.label("Profile");
+            widgets::chip(ui, "⏱", widgets::profile_label(editing_mode));
         });
         ui.label("Configure the CPU temperature ceiling independently from power limits.");
         ui.add_space(8.0);
         let temp_subtitle = if self.temp_limit_enabled {
-            "Custom CPU temperature ceiling is active"
+            "Custom CPU temperature ceiling for this profile"
         } else {
-            "Temperature limit will not be changed"
+            "No temperature limit for this profile"
         };
         widgets::switch_card(ui, "Enable CPU Temperature Limit", temp_subtitle, &mut self.temp_limit_enabled);
         ui.add_space(8.0);
@@ -210,39 +259,6 @@ impl TdpScreen {
         );
         widgets::small(ui, "Persists across reboots (saved to disk)");
         ui.add_space(16.0);
-
-        ui.horizontal(|ui| {
-            if widgets::primary_button(ui, "✔ Apply", !busy && can_apply).clicked() {
-                let request = SetTdpRequest {
-                    apply_power_limits: self.power_limits_enabled,
-                    apply_temp_limit: self.temp_limit_enabled,
-                    sustained_w: self.sustained_w.round() as i32,
-                    boost_w: self.boost_w.round() as i32,
-                    temp_limit_c: self.temp_limit_c.round() as i32,
-                };
-                let previous = self.loaded();
-                let (services, store) = (cx.services.clone(), cx.store.clone());
-                self.start(cx, async move { tdp::set_tdp(&*services, &*store, request, previous).await });
-            }
-            if widgets::outlined_button(ui, "⟲ Reload from Hardware", !busy).clicked() {
-                let services = cx.services.clone();
-                self.start(cx, async move { tdp::reload(&*services).await });
-            }
-            if busy {
-                ui.spinner();
-            }
-        });
-
-        if !can_apply {
-            ui.add_space(12.0);
-            widgets::banner(
-                ui,
-                "ℹ",
-                "Enable at least one limit to apply changes",
-                theme::SECONDARY_CONTAINER,
-                theme::ON_SECONDARY_CONTAINER,
-            );
-        }
     }
 }
 

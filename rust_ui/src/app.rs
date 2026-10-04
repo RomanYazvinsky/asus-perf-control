@@ -236,6 +236,30 @@ impl eframe::App for AsusApp {
                 ui.with_layout(Layout::top_down(Align::Center), |ui| self.navigation_rail(ui));
             });
 
+        // Page-level Apply buttons stay visible below the scrolling content.
+        let has_actions = match self.selected {
+            1 => self.hardware.tdp.has_actions(),
+            3 => self.hardware.fan.has_actions(),
+            4 => self.hardware.battery.has_actions(),
+            _ => false,
+        };
+        if has_actions {
+            egui::Panel::bottom("screen_actions")
+                .resizable(false)
+                .frame(egui::Frame::new().fill(theme::SURFACE_CONTAINER).inner_margin(egui::Margin::symmetric(20, 10)))
+                .show(ui, |ui| {
+                    widgets::container(ui, |ui| {
+                        let mut cx = screen_ctx!(self);
+                        match self.selected {
+                            1 => self.hardware.tdp.actions(ui, &mut cx),
+                            3 => self.hardware.fan.actions(ui, &mut cx),
+                            4 => self.hardware.battery.actions(ui, &mut cx),
+                            _ => {}
+                        }
+                    });
+                });
+        }
+
         let curve_commands = std::mem::take(&mut self.commands.curve);
         let mut profile_applied = false;
         egui::CentralPanel::default()

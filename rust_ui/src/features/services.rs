@@ -13,7 +13,7 @@ use super::cpu_boost::{self, CpuBoostMode, CpuBoostService, CpuBoostStatus};
 use super::fan::{FanCurveData, FanCurvePoint, FanEngineConfig, FanId, FanInfo, FanService, FanTemperatures, PerfProfile};
 use super::gpu::{self, GpuConfiguration, GpuMode, GpuService, GpuStatus};
 use super::performance::PerformanceService;
-use super::tdp::{TdpConfig, TdpService};
+use super::tdp::{self, TdpConfig, TdpService};
 use super::updates::{PackageUpdateBackend, PackageUpdateService, PackageUpdateStatus};
 use super::xg_diag::{custom_curve, XgFanCurvePort, XgPlatformProfilePort};
 use crate::backend::Backend;
@@ -81,7 +81,7 @@ impl CpuBoostService for Services {
 
 #[async_trait]
 impl TdpService for Services {
-    /// asusd limits + saved temperature limit from our daemon + active profile.
+    /// asusd limits + active profile.
     async fn get_tdp_config(&self) -> Result<TdpConfig> {
         let asusd = self
             .backend
@@ -89,14 +89,12 @@ impl TdpService for Services {
             .get_tdp_config()
             .await
             .map_err(|e| anyhow!("Failed to get TDP config from asusd: {e:#}. Is asusd running?"))?;
-        // Non-critical: daemon down means "no saved limit", unknown profile means Balanced.
-        let temp_limit_c = self.backend.daemon.get_temp_limit().await.unwrap_or(0);
+        // Non-critical: unknown profile means Balanced.
         let active_performance_mode = self.backend.asusd.get_performance_mode().await.unwrap_or(1);
         Ok(TdpConfig {
             is_supported: true,
             sustained_w: asusd.sustained_w,
             boost_w: asusd.boost_w,
-            temp_limit_c,
             active_performance_mode,
             min_sustained_w: asusd.min_sustained_w,
             max_sustained_w: asusd.max_sustained_w,
@@ -104,10 +102,6 @@ impl TdpService for Services {
             max_boost_w: asusd.max_boost_w,
             power_limits_enabled: asusd.power_limits_enabled,
         })
-    }
-
-    async fn set_performance_mode(&self, mode: i32) -> Result<()> {
-        PerformanceService::set_performance_mode(self, mode).await
     }
 
     async fn set_power_limits(&self, sustained_w: i32, boost_w: i32) -> Result<()> {
@@ -128,10 +122,17 @@ impl TdpService for Services {
         .map_err(|e: anyhow::Error| anyhow!("Failed to clear TDP power limits: {e:#}"))
     }
 
-    async fn set_cpu_temp_limit(&self, temp_limit_c: i32) -> Result<()> {
+    async fn get_profile_temp_limit(&self, mode: i32) -> Result<i32> {
         self.backend
             .daemon
-            .set_temp_limit(temp_limit_c)
+            .get_profile_temp_limit(tdp::daemon_profile_name(mode))
+            .await
+    }
+
+    async fn set_profile_temp_limit(&self, mode: i32, temp_limit_c: i32) -> Result<()> {
+        self.backend
+            .daemon
+            .set_profile_temp_limit(tdp::daemon_profile_name(mode), temp_limit_c)
             .await
             .map(|_| ())
             .map_err(|e| anyhow!("Failed to set temperature limit via daemon: {e:#}"))
@@ -253,8 +254,9 @@ impl FanService for Services {
         })
     }
 
-    async fn set_active_profile(&self, profile: PerfProfile) -> Result<()> {
-        self.backend.asusd.set_active_profile(profile).await
+    async fn active_profile(&self) -> Result<PerfProfile> {
+        let id = self.backend.asusd.get_platform_profile().await?;
+        Ok(PerfProfile::from_asusd_id(id).unwrap_or(PerfProfile::Balanced))
     }
 
     async fn asusd_curves(&self, profile: PerfProfile) -> Result<Vec<FanCurveData>> {

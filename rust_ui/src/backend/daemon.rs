@@ -31,17 +31,23 @@ impl DaemonClient {
 
     // ----------------------------------------------------------- temp limit
 
-    /// Saved CPU temperature limit (0 = no saved limit).
-    pub async fn get_temp_limit(&self) -> Result<i32> {
-        trace("DbusClient.getTempLimit", &[], self.call("GetTempLimit", &())).await
+    /// Saved CPU temperature limit of a platform profile ("Quiet", "Balanced",
+    /// "Performance"); 0 = no saved limit.
+    pub async fn get_profile_temp_limit(&self, profile: &str) -> Result<i32> {
+        trace(
+            "DbusClient.getProfileTempLimit",
+            &[("profile", profile.to_string())],
+            self.call("GetProfileTempLimit", &(profile,)),
+        )
+        .await
     }
 
-    /// 0 clears the saved limit.
-    pub async fn set_temp_limit(&self, temp_limit_c: i32) -> Result<bool> {
+    /// Saves a profile's limit (0 clears it); applied only while that profile is active.
+    pub async fn set_profile_temp_limit(&self, profile: &str, temp_limit_c: i32) -> Result<bool> {
         trace(
-            "DbusClient.setTempLimit",
-            &[("tempLimitC", temp_limit_c.to_string())],
-            self.call("SetTempLimit", &(temp_limit_c,)),
+            "DbusClient.setProfileTempLimit",
+            &[("profile", profile.to_string()), ("tempLimitC", temp_limit_c.to_string())],
+            self.call("SetProfileTempLimit", &(profile, temp_limit_c)),
         )
         .await
     }

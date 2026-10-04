@@ -65,9 +65,8 @@ impl FanService for Fake {
             gpu_temp_c: 48,
         })
     }
-    async fn set_active_profile(&self, profile: PerfProfile) -> Result<()> {
-        self.call(format!("profile {}", profile.name()));
-        Ok(())
+    async fn active_profile(&self) -> Result<PerfProfile> {
+        Ok(PerfProfile::Balanced)
     }
     async fn asusd_curves(&self, _profile: PerfProfile) -> Result<Vec<FanCurveData>> {
         Ok(self.curves.clone())
@@ -145,7 +144,7 @@ async fn loads_fans_curves_and_saves_defaults() {
 }
 
 #[tokio::test]
-async fn restarts_saved_dynamic_engine_and_profile() {
+async fn restarts_saved_dynamic_engine_without_switching_profile() {
     let service = Fake::new();
     let config = FanEngineConfig::new(PerfProfile::Quiet, default_fan_curve(), default_fan_curve());
     let store = store(Some(FanDesiredSettings {
@@ -157,7 +156,9 @@ async fn restarts_saved_dynamic_engine_and_profile() {
 
     let state = loaded(&service, &store).await;
 
-    assert_eq!(service.calls(), vec!["start", "profile quiet"]);
+    assert_eq!(service.calls(), vec!["start"]);
+    assert_eq!(state.selected_profile, PerfProfile::Quiet);
+    assert_eq!(state.active_profile, Some(PerfProfile::Balanced));
     assert!(state.dynamic_engine_running);
     assert_eq!(state.selected_fan, FanId::Gpu);
     assert_eq!(state.engine_config.map(|c| c.to_json()), Some(config.to_json()));
@@ -297,4 +298,42 @@ fn point_updates_keep_curve_ordered_and_monotonic() {
     assert_eq!(points[5].temp_c, 79.0);
     assert!(points[..5].iter().all(|p| p.speed_percent <= 5.0));
     assert!(points[6].speed_percent >= 90.0);
+}
+
+#[tokio::test]
+async fn select_profile_only_changes_edited_profile() {
+    let service = Fake::new();
+    let store = store(None);
+    let state = loaded(&service, &store).await;
+
+    let FanState::Loaded(next) = select_profile(&store, state, PerfProfile::Performance) else {
+        panic!()
+    };
+
+    assert_eq!(next.selected_profile, PerfProfile::Performance);
+    assert_eq!(next.active_profile, Some(PerfProfile::Balanced));
+    assert!(service.calls().is_empty());
+    assert_eq!(store.load().hardware.fan.unwrap().selected_profile.as_deref(), Some("performance"));
+}
+
+#[tokio::test]
+async fn apply_curves_sends_every_edited_fan_to_the_selected_profile() {
+    let service = Fake::new();
+    let store = store(None);
+    let state = loaded(&service, &store).await;
+    let state = match select_profile(&store, state, PerfProfile::Quiet) {
+        FanState::Loaded(state) => state,
+        other => panic!("{other:?}"),
+    };
+
+    let result = apply_curves(
+        &service,
+        &store,
+        state,
+        vec![(FanId::Cpu, default_fan_curve()), (FanId::Gpu, default_fan_curve())],
+    )
+    .await;
+
+    assert!(matches!(result, FanState::Loaded(_)));
+    assert_eq!(service.calls(), vec!["curve quiet cpu", "curve quiet gpu"]);
 }

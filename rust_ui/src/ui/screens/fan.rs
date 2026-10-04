@@ -32,7 +32,7 @@ pub struct FanScreen {
 enum Action {
     ToggleEngine(bool),
     SelectProfile(PerfProfile),
-    ApplyCurve(FanId, Vec<fan::FanCurvePoint>),
+    ApplyCurves(Vec<(FanId, Vec<fan::FanCurvePoint>)>),
     Reset,
     MaxSpeed(FanId),
 }
@@ -190,14 +190,59 @@ impl FanScreen {
         if let Some(mode) = widgets::profile_tabs(ui, state.selected_profile.to_mode()) {
             action = Some(Action::SelectProfile(PerfProfile::from_mode(mode)));
         }
+        widgets::editing_profile_hint(
+            ui,
+            state.selected_profile.to_mode(),
+            state.active_profile.map(PerfProfile::to_mode),
+        );
 
-        for fan_id in state.fan_ids() {
-            ui.add_space(8.0);
-            if let Some(fan_action) = self.fan_section(ui, state, fan_id, busy, curve_commands) {
-                action = Some(fan_action);
+        ui.add_space(8.0);
+        // Fans side by side so both curves are visible at once.
+        let fan_ids = state.fan_ids();
+        ui.columns(fan_ids.len().max(1), |columns| {
+            for (column, fan_id) in columns.iter_mut().zip(fan_ids) {
+                if let Some(fan_action) = self.fan_section(column, state, fan_id, busy, curve_commands) {
+                    action = Some(fan_action);
+                }
             }
-        }
+        });
         action
+    }
+
+    /// Whether the sticky action bar is shown.
+    pub fn has_actions(&self) -> bool {
+        matches!(self.state, FanState::Loaded(_))
+    }
+
+    /// Apply / reset for the edited profile, drawn in the sticky bar below the scroll area.
+    pub fn actions(&mut self, ui: &mut Ui, cx: &mut ScreenCtx) {
+        let FanState::Loaded(state) = &self.state else {
+            return;
+        };
+        let state = state.clone();
+        let busy = self.task.is_some() || self.max_speed_task.is_some();
+        let edits: Vec<_> = state
+            .fan_ids()
+            .into_iter()
+            .filter_map(|id| self.editors.get(&id)?.edited_points().map(|points| (id, points)))
+            .collect();
+        let mut action = None;
+        ui.horizontal(|ui| {
+            if widgets::primary_button(ui, "✔ Apply", !busy && !edits.is_empty()).clicked() {
+                action = Some(Action::ApplyCurves(edits.clone()));
+            }
+            if widgets::outlined_button(ui, "⟲ Reset to Default", !busy).clicked() {
+                action = Some(Action::Reset);
+            }
+            if busy {
+                ui.spinner();
+            } else if !edits.is_empty() {
+                widgets::muted(ui, "Unsaved curve changes");
+            }
+        });
+        if let Some(action) = action {
+            self.run(action, state, cx);
+        }
     }
 
     fn fan_section(
@@ -228,26 +273,23 @@ impl FanScreen {
             }
             FanControlMode::AsusctlCurve | FanControlMode::DynamicEngine => {
                 let curve = state.editor_curve(fan_id);
-                // Former UI scaled RPM this way; values above 100 % are simply not drawn.
-                let current_speed = (rpm > 0).then(|| f64::from(rpm) / 50.0 * 100.0);
+                // Each fan follows its own sensor; 0 means the reading failed.
+                let temp_c = match fan_id {
+                    FanId::Cpu => state.cpu_temp_c,
+                    FanId::Gpu => state.gpu_temp_c,
+                };
+                let current_temp = (temp_c > 0).then_some(f64::from(temp_c));
                 let editor = self.editors.entry(fan_id).or_default();
-                if let Some(points) = editor.show(ui, &curve, false, current_speed, curve_commands) {
-                    action = Some(Action::ApplyCurve(fan_id, points));
-                }
+                editor.show(ui, &curve, false, current_temp, curve_commands);
                 if mode == FanControlMode::DynamicEngine {
                     widgets::small(ui, "Apply sends this curve to the running Dynamic Engine.");
                 }
             }
         }
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!busy, egui::Button::new("⟲ Reset to Default")).clicked() {
-                action = Some(Action::Reset);
-            }
-            if ui.add_enabled(!busy, egui::Button::new("⏩ Test Max Speed")).clicked() {
-                action = Some(Action::MaxSpeed(fan_id));
-            }
-        });
+        if ui.add_enabled(!busy, egui::Button::new("⏩ Test Max Speed")).clicked() {
+            action = Some(Action::MaxSpeed(fan_id));
+        }
         action
     }
 
@@ -260,19 +302,11 @@ impl FanScreen {
             }
             Action::ToggleEngine(false) => Box::pin(async move { fan::stop_dynamic_engine(&*services, &*store, state).await }),
             Action::SelectProfile(profile) => {
-                Box::pin(async move { fan::select_profile(&*services, &*store, state, profile).await })
+                Box::pin(async move { fan::select_profile(&*store, state, profile) })
             }
-            Action::ApplyCurve(fan_id, curve) => match state.control_mode(fan_id) {
-                FanControlMode::DynamicEngine => {
-                    Box::pin(async move { fan::update_dynamic_curve(&*services, &*store, state, fan_id, curve).await })
-                }
-                _ => {
-                    let profile = state.selected_profile;
-                    Box::pin(async move {
-                        fan::set_asusctl_curve(&*services, &*store, state, fan_id, profile, curve).await
-                    })
-                }
-            },
+            Action::ApplyCurves(curves) => {
+                Box::pin(async move { fan::apply_curves(&*services, &*store, state, curves).await })
+            }
             Action::Reset => {
                 let profile = state.selected_profile;
                 Box::pin(async move { fan::reset_to_defaults(&*services, &*store, state, profile).await })
