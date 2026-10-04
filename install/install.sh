@@ -106,7 +106,20 @@ install_binary_atomically() {
     temporary="$(mktemp "${destination%/*}/.${destination##*/}.tmp.XXXXXX")"
     TEMP_INSTALLS+=("$temporary")
     install -m 0755 "$source" "$temporary"
+    # Label the file for its final path before it appears there: D-Bus activation may start
+    # the daemon the moment it is moved in, and with the temporary file's label it would run
+    # in init_t instead of asus_control_t.
+    if command -v selinuxenabled > /dev/null 2>&1 && selinuxenabled \
+        && command -v matchpathcon > /dev/null 2>&1; then
+        local context
+        if context="$(matchpathcon -n "$destination" 2> /dev/null)"; then
+            chcon "$context" "$temporary" || true
+        fi
+    fi
     mv -f "$temporary" "$destination"
+    if command -v restorecon > /dev/null 2>&1; then
+        restorecon -F "$destination" 2> /dev/null || true
+    fi
 }
 
 # On SELinux systems the daemon needs its own domain (asus_control_t); in the generic init_t
@@ -184,6 +197,8 @@ elif pkill -0 -f asus-control-daemon 2>/dev/null; then
 fi
 
 if [ -f "$DAEMON_SOURCE/target/release/asus-control-daemon" ]; then
+    # Load the policy first so the new binary gets its label as it is installed.
+    install_selinux_policy
     install_binary_atomically "$DAEMON_BINARY" "$DAEMON_DEST/asus-control-daemon"
     echo -e "${GREEN}✓ Rust daemon installed to $DAEMON_DEST${NC}"
 else
@@ -198,8 +213,6 @@ else
     echo -e "${RED}Error: Compiled hotkey agent binary not found${NC}"
     exit 1
 fi
-
-install_selinux_policy
 
 # Install the desktop application. The ROG hotkey agent starts it with
 # `gtk-launch asus-linux-control`, which only works when the desktop entry is installed.
@@ -251,8 +264,11 @@ fi
 if [ -f "$SYSTEMD_DIR/asus-control-daemon.service" ]; then
     install -m 0644 "$SYSTEMD_DIR/asus-control-daemon.service" /etc/systemd/system/
     systemctl daemon-reload
-    systemctl enable --now asus-control-daemon.service
-    echo -e "${GREEN}✓ Systemd service enabled and started${NC}"
+    systemctl enable asus-control-daemon.service
+    # Restart rather than `enable --now`: if D-Bus activation already started the daemon during
+    # the install, it must still be replaced by a process running the new binary and policy.
+    systemctl restart asus-control-daemon.service
+    echo -e "${GREEN}✓ Systemd service enabled and restarted${NC}"
 fi
 
 # Install the per-user hotkey agent globally. The relative wants link enables it for graphical

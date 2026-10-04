@@ -28,18 +28,30 @@ for _ in 1 2 3 4 5; do
     sleep 0.2
 done
 
+# SELinux: load the module before the new binary appears, so it can be labelled for its
+# final path while still a temporary file. D-Bus activation may start the daemon the moment
+# it is moved in; with the temporary label it would run in init_t, not asus_control_t.
+SELINUX=0
+if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+    SELINUX=1
+    echo "   Updating SELinux module..."
+    semodule -i selinux/asus_control.cil
+fi
+
 # Copy new daemon
 echo "   Installing new daemon..."
 install -d /usr/lib/asus-linux-control
 install -m 755 ../rust_daemon/target/release/asus-control-daemon \
     /usr/lib/asus-linux-control/asus-control-daemon.new
+if [ "$SELINUX" = 1 ] && command -v matchpathcon >/dev/null 2>&1; then
+    chcon "$(matchpathcon -n /usr/lib/asus-linux-control/asus-control-daemon)" \
+        /usr/lib/asus-linux-control/asus-control-daemon.new || true
+fi
 mv -f /usr/lib/asus-linux-control/asus-control-daemon.new \
     /usr/lib/asus-linux-control/asus-control-daemon
 
-# SELinux: keep the daemon in its own domain (the copy above reset the binary label)
-if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
-    echo "   Updating SELinux module and labels..."
-    semodule -i selinux/asus_control.cil
+if [ "$SELINUX" = 1 ]; then
+    echo "   Restoring SELinux labels..."
     restorecon -RF /usr/lib/asus-linux-control
     if [ -d /var/lib/asus-linux-control ]; then
         restorecon -RF /var/lib/asus-linux-control
@@ -59,7 +71,9 @@ install -m 644 dbus/com.asuslinuxcontrol.Daemon.policy /usr/share/polkit-1/actio
 echo "   Updating systemd service..."
 install -m 644 systemd/asus-control-daemon.service /etc/systemd/system/asus-control-daemon.service
 systemctl daemon-reload
-systemctl enable --now asus-control-daemon.service
+systemctl enable asus-control-daemon.service
+# Restart: a daemon D-Bus-activated during the install must be replaced by one in the right domain.
+systemctl restart asus-control-daemon.service
 
 # Reload D-Bus
 echo "   Reloading D-Bus..."

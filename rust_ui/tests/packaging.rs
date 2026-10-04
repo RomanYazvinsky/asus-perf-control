@@ -238,7 +238,7 @@ fn direct_installer_installs_rog_opt_in_before_daemon_start() {
     let installer = read("install/install.sh");
     let drop_in = installer.find("rog-hotkey.conf").expect("rog-hotkey.conf");
     let start = installer
-        .find("systemctl enable --now asus-control-daemon.service")
+        .find("systemctl restart asus-control-daemon.service")
         .expect("daemon start");
     assert!(drop_in < start);
 }
@@ -299,7 +299,8 @@ fn rebuild_daemon_installs_dbus_and_polkit_files() {
         "install -m 644 dbus/com.asuslinuxcontrol.Daemon.conf /etc/dbus-1/system.d/com.asuslinuxcontrol.Daemon.conf",
         "install -m 644 dbus/com.asuslinuxcontrol.Daemon.policy /usr/share/polkit-1/actions/com.asuslinuxcontrol.Daemon.policy",
         "install -m 644 systemd/asus-control-daemon.service /etc/systemd/system/asus-control-daemon.service",
-        "systemctl enable --now asus-control-daemon.service",
+        "systemctl enable asus-control-daemon.service",
+        "systemctl restart asus-control-daemon.service",
         "GetCpuBoostStatus",
     ] {
         assert!(script.contains(needle), "{needle}");
@@ -354,21 +355,27 @@ fn rpm_daemon_package_loads_and_removes_selinux_module() {
 
 #[test]
 fn direct_installers_load_selinux_module_and_restore_labels_before_start() {
-    // (script, marker of the SELinux step, marker of the daemon binary install)
-    for (path, selinux_step, binary_step) in [
-        ("install/install.sh", "\ninstall_selinux_policy\n", "install_binary_atomically \"$DAEMON_BINARY\""),
+    // The module is loaded before the binary appears and the binary is labelled for its final
+    // path while still temporary: D-Bus activation can start it the moment it is moved in.
+    // A restart at the end replaces any daemon activated during the install.
+    // (script, marker of the module load, marker of the daemon binary install)
+    for (path, module_step, binary_step) in [
+        ("install/install.sh", "    install_selinux_policy\n", "install_binary_atomically \"$DAEMON_BINARY\""),
         ("install/rebuild-daemon.sh", "semodule -i selinux/asus_control.cil", "asus-control-daemon.new"),
     ] {
         let script = read(path);
         assert!(script.contains("semodule -i"), "{path}: semodule");
         assert!(script.contains("selinux/asus_control.cil"), "{path}: module path");
         assert!(script.contains("restorecon -RF"), "{path}: restorecon");
-        let binary = script.rfind(binary_step).unwrap_or_else(|| panic!("{path}: binary install"));
-        let selinux = script.find(selinux_step).unwrap_or_else(|| panic!("{path}: SELinux step"));
+        assert!(script.contains("matchpathcon -n"), "{path}: label lookup");
+        assert!(script.contains("chcon "), "{path}: label before move");
+        let module = script.find(module_step).unwrap_or_else(|| panic!("{path}: SELinux step"));
+        let binary = script.find(binary_step).unwrap_or_else(|| panic!("{path}: binary install"));
         let start = script
-            .find("systemctl enable --now asus-control-daemon.service")
+            .find("systemctl restart asus-control-daemon.service")
             .unwrap_or_else(|| panic!("{path}: daemon start"));
-        assert!(binary < selinux && selinux < start, "{path}: order");
+        assert!(module < binary && binary < start, "{path}: order");
+        assert!(!script.contains("systemctl enable --now asus-control-daemon"), "{path}: restart, not enable --now");
     }
 }
 
