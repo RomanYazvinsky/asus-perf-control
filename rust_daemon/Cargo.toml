@@ -9,7 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 # D-Bus
-zbus = "4.0"
+# tokio, not the default async-io executor: method handlers use tokio::process/spawn.
+zbus = { version = "4.0", default-features = false, features = ["tokio"] }
 tokio = { version = "1.35", features = ["full"] }
 futures-util = "0.3"
 
@@ -33,3 +34,7 @@ strip = true
 lto = true
 codegen-units = 1
 opt-level = "z"  # Optimize for size
+
+[dev-dependencies]
+# p2p: in-process D-Bus connections for handler tests.
+zbus = { version = "4.0", default-features = false, features = ["tokio", "p2p"] }
