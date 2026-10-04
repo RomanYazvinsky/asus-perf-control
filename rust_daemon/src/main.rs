@@ -23,6 +23,7 @@ use package_updates::parser::parse_check_output;
 use package_updates::status::{PackageBackend, UpdateErrorCode, UpdateState, UpdateStatus};
 
 use anyhow::Result;
+use futures_util::{FutureExt, StreamExt};
 use log::{error, info};
 use std::sync::Mutex;
 use tokio::process::Command;
@@ -37,6 +38,7 @@ const ASUSD_PLATFORM_PATH: &str = "/xyz/ljones";
 const ASUSD_PLATFORM_INTERFACE: &str = "xyz.ljones.Platform";
 const ASUSD_PLATFORM_PROFILE_PROPERTY: &str = "PlatformProfile";
 const PROFILE_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const PROFILE_SETTLE_DELAY: Duration = Duration::from_secs(1);
 
 struct AsusControlDaemon {
     fan_engine: Mutex<FanEngineController>,
@@ -184,18 +186,6 @@ async fn active_asusd_platform_profile(
     platform_profile_name(platform_profile)
 }
 
-async fn apply_active_profile_temp_limit(conn: &zbus::Connection) -> Result<(), zbus::fdo::Error> {
-    let profile = active_asusd_platform_profile(conn).await?;
-    info!("Applying saved CPU temperature setting for profile={profile}");
-    temp::apply_saved_temp_limit_for_profile(&profile).map_err(|e| {
-        error!(
-            "Failed to apply saved CPU temperature setting for profile={}: {}",
-            profile, e
-        );
-        zbus::fdo::Error::Failed(e.to_string())
-    })
-}
-
 fn restore_saved_fan_engine_on_startup(daemon: &AsusControlDaemon) -> Result<(), String> {
     let Some(config) = read_saved_fan_engine_config().map_err(|e| e.to_string())? else {
         return Ok(());
@@ -209,18 +199,87 @@ fn restore_saved_fan_engine_on_startup(daemon: &AsusControlDaemon) -> Result<(),
     controller.start(config).map_err(|e| e.to_string())
 }
 
+async fn platform_profile_signals(
+    conn: &zbus::Connection,
+) -> zbus::Result<zbus::fdo::PropertiesChangedStream<'static>> {
+    zbus::fdo::PropertiesProxy::builder(conn)
+        .destination(ASUSD_BUS_NAME)?
+        .path(ASUSD_PLATFORM_PATH)?
+        .build()
+        .await?
+        .receive_properties_changed()
+        .await
+}
+
+fn is_platform_profile_signal(signal: &zbus::fdo::PropertiesChanged) -> bool {
+    signal.args().is_ok_and(|args| {
+        args.interface_name().as_str() == ASUSD_PLATFORM_INTERFACE
+            && args
+                .changed_properties()
+                .contains_key(ASUSD_PLATFORM_PROFILE_PROPERTY)
+    })
+}
+
+/// Waits for the next poll tick or asusd PlatformProfile signal.
+/// Returns true when the profile was written, even if its name did not change.
+async fn wait_for_platform_profile_event(
+    signals: &mut Option<zbus::fdo::PropertiesChangedStream<'static>>,
+) -> bool {
+    let Some(stream) = signals.as_mut() else {
+        sleep(PROFILE_POLL_INTERVAL).await;
+        return false;
+    };
+
+    tokio::select! {
+        _ = sleep(PROFILE_POLL_INTERVAL) => false,
+        signal = stream.next() => match signal {
+            Some(signal) if is_platform_profile_signal(&signal) => {
+                // Let firmware finish reloading its limits, and coalesce write bursts
+                // (tuned and tuned-ppd write the profile several times on startup).
+                sleep(PROFILE_SETTLE_DELAY).await;
+                while let Some(Some(_)) = stream.next().now_or_never() {}
+                true
+            }
+            Some(_) => false,
+            None => {
+                error!("asusd PropertiesChanged stream ended; falling back to polling");
+                *signals = None;
+                false
+            }
+        },
+    }
+}
+
+/// Keeps the saved CPU temperature limit applied for the active platform profile.
+///
+/// Every platform profile write makes the firmware reload its thermal limits, which
+/// discards the ryzenadj tctl value, so the limit is re-applied on each write rather
+/// than only when the profile name changes.
 async fn monitor_platform_profile_changes(conn: zbus::Connection) {
+    let mut signals = match platform_profile_signals(&conn).await {
+        Ok(stream) => Some(stream),
+        Err(e) => {
+            error!("Failed to subscribe to asusd platform profile signals: {}", e);
+            None
+        }
+    };
     let mut last_profile: Option<String> = None;
+    let mut profile_rewritten = false;
 
     loop {
         match active_asusd_platform_profile(&conn).await {
             Ok(profile) => {
-                if last_profile.as_deref() != Some(profile.as_str()) {
-                    info!("Platform profile changed to {profile}");
+                let changed = last_profile.as_deref() != Some(profile.as_str());
+                if changed || profile_rewritten {
+                    if changed {
+                        info!("Platform profile changed to {profile}");
+                    } else {
+                        info!("Platform profile {profile} rewritten; re-applying CPU temperature setting");
+                    }
                     if let Err(e) = temp::apply_saved_temp_limit_for_profile(&profile) {
                         error!(
-                            "Failed to apply CPU temperature setting after profile change: {}",
-                            e
+                            "Failed to apply CPU temperature setting for profile={}: {}",
+                            profile, e
                         );
                     }
                     last_profile = Some(profile);
@@ -231,7 +290,7 @@ async fn monitor_platform_profile_changes(conn: zbus::Connection) {
             }
         }
 
-        sleep(PROFILE_POLL_INTERVAL).await;
+        profile_rewritten = wait_for_platform_profile_event(&mut signals).await;
     }
 }
 
@@ -518,7 +577,7 @@ impl AsusControlDaemon {
         Ok(true)
     }
 
-    /// Set CPU temperature limit (60-100°C, 0 to clear)
+    /// Set CPU temperature limit (60-100°C, 0 to clear) for the active profile.
     /// Saves to file and applies via ryzenadj
     /// Requires polkit authorization
     async fn set_temp_limit(
@@ -528,54 +587,90 @@ impl AsusControlDaemon {
         temp_c: i32,
     ) -> Result<bool, zbus::fdo::Error> {
         info!("SetTempLimit called with temp={}°C", temp_c);
-
-        // Validate input (0 means "clear saved limit")
-        if temp_c != 0 && !(60..=100).contains(&temp_c) {
-            error!(
-                "Invalid temperature limit: {}. Must be 0 (clear) or 60-100",
-                temp_c
-            );
-            return Err(zbus::fdo::Error::InvalidArgs(format!(
-                "Temperature limit must be 0 (clear) or 60-100°C, got {}°C",
-                temp_c
-            )));
-        }
-
-        // Check polkit authorization
-        let sender = hdr
-            .sender()
-            .ok_or_else(|| zbus::fdo::Error::Failed("No sender in message".to_string()))?;
-
-        polkit::check_authorization(conn, sender.as_str(), "com.asuslinuxcontrol.set-temp-limit")
-            .await
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-
         let profile = active_asusd_platform_profile(conn).await?;
-
-        // Apply and save for the active platform profile bucket.
-        if temp_c == 0 {
-            temp::save_profile_temp_limit(&profile, temp_c).map_err(|e| {
-                error!("Failed to clear temp limit: {}", e);
-                zbus::fdo::Error::Failed(e.to_string())
-            })?;
-            info!("Temperature limit cleared for profile={profile}");
-        } else {
-            temp::save_profile_temp_limit(&profile, temp_c).map_err(|e| {
-                error!("Failed to save temp limit: {}", e);
-                zbus::fdo::Error::Failed(e.to_string())
-            })?;
-            temp::apply_temp_limit_ryzenadj(temp_c).map_err(|e| {
-                error!("Failed to apply temp limit via ryzenadj: {}", e);
-                zbus::fdo::Error::Failed(e.to_string())
-            })?;
-            info!(
-                "Temperature limit set to {}°C and saved for profile={}",
-                temp_c, profile
-            );
-        }
-
-        Ok(true)
+        save_and_apply_profile_temp_limit(conn, &hdr, &profile, temp_c).await
     }
+
+    /// Get saved CPU temperature limit for a platform profile (0 = no saved limit).
+    /// No authorization required for reading
+    async fn get_profile_temp_limit(&self, profile: String) -> Result<i32, zbus::fdo::Error> {
+        info!("GetProfileTempLimit called for profile={profile}");
+        temp::read_profile_temp_limit(&profile).map_err(|e| {
+            error!("Failed to read saved temp limit for profile={}: {}", profile, e);
+            zbus::fdo::Error::InvalidArgs(e.to_string())
+        })
+    }
+
+    /// Set CPU temperature limit (60-100°C, 0 to clear) for any platform profile.
+    /// Applied via ryzenadj only when that profile is active; otherwise it is applied
+    /// on the next switch to it.
+    /// Requires polkit authorization
+    async fn set_profile_temp_limit(
+        &self,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] hdr: zbus::MessageHeader<'_>,
+        profile: String,
+        temp_c: i32,
+    ) -> Result<bool, zbus::fdo::Error> {
+        info!("SetProfileTempLimit called with profile={profile} temp={temp_c}°C");
+        save_and_apply_profile_temp_limit(conn, &hdr, &profile, temp_c).await
+    }
+}
+
+async fn save_and_apply_profile_temp_limit(
+    conn: &zbus::Connection,
+    hdr: &zbus::MessageHeader<'_>,
+    profile: &str,
+    temp_c: i32,
+) -> Result<bool, zbus::fdo::Error> {
+    // Validate input (0 means "clear saved limit")
+    if temp_c != 0 && !(60..=100).contains(&temp_c) {
+        error!(
+            "Invalid temperature limit: {}. Must be 0 (clear) or 60-100",
+            temp_c
+        );
+        return Err(zbus::fdo::Error::InvalidArgs(format!(
+            "Temperature limit must be 0 (clear) or 60-100°C, got {}°C",
+            temp_c
+        )));
+    }
+    let bucket = temp::normalize_platform_profile(profile)
+        .map_err(|e| zbus::fdo::Error::InvalidArgs(e.to_string()))?;
+
+    // Check polkit authorization
+    let sender = hdr
+        .sender()
+        .ok_or_else(|| zbus::fdo::Error::Failed("No sender in message".to_string()))?;
+
+    polkit::check_authorization(conn, sender.as_str(), "com.asuslinuxcontrol.set-temp-limit")
+        .await
+        .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+
+    temp::save_profile_temp_limit(profile, temp_c).map_err(|e| {
+        error!("Failed to save temp limit for profile={}: {}", profile, e);
+        zbus::fdo::Error::Failed(e.to_string())
+    })?;
+
+    if temp_c == 0 {
+        info!("Temperature limit cleared for profile={profile}");
+        return Ok(true);
+    }
+
+    let active = active_asusd_platform_profile(conn).await?;
+    let is_active = temp::normalize_platform_profile(&active).is_ok_and(|active| active == bucket);
+    if is_active {
+        temp::apply_temp_limit_ryzenadj(temp_c).map_err(|e| {
+            error!("Failed to apply temp limit via ryzenadj: {}", e);
+            zbus::fdo::Error::Failed(e.to_string())
+        })?;
+        info!("Temperature limit set to {}°C and saved for active profile={}", temp_c, profile);
+    } else {
+        info!(
+            "Temperature limit {}°C saved for profile={} (active={}); applies on switch",
+            temp_c, profile, active
+        );
+    }
+    Ok(true)
 }
 
 #[tokio::main]
@@ -622,14 +717,6 @@ async fn main() -> Result<()> {
 
     info!("ASUS Control D-Bus service is ready");
 
-    // Apply saved temperature limit for the active platform profile on startup.
-    if let Err(e) = apply_active_profile_temp_limit(&_conn).await {
-        error!("Failed to apply saved temperature limit on startup: {}", e);
-        // Continue anyway - not critical
-    }
-
-    tokio::spawn(monitor_platform_profile_changes(_conn.clone()));
-
     // Refresh system power-plan EPP baseline before applying saved CPU boost overlay.
     if let Err(e) = reapply_active_asusd_platform_profile().await {
         error!("Failed to refresh CPU boost EPP baseline on startup: {}", e);
@@ -641,6 +728,10 @@ async fn main() -> Result<()> {
         error!("Failed to apply saved CPU boost mode on startup: {}", e);
         // Continue anyway - not critical
     }
+
+    // Start after the profile reapply above: writing the platform profile makes the
+    // firmware reset tctl, so the first monitor pass applies the saved limit last.
+    tokio::spawn(monitor_platform_profile_changes(_conn.clone()));
 
     if shutdown_already_pending(&mut sigint, &mut sigterm).await {
         info!("Shutdown signal received during startup; skipping ROG firmware mutation");

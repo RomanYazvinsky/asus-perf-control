@@ -1,6 +1,6 @@
 [Unit]
 Description=ASUS Linux Control daemon
-After=dbus.service asusd.service
+After=dbus.service asusd.service tuned.service tuned-ppd.service power-profiles-daemon.service
 
 [Service]
 Type=dbus
