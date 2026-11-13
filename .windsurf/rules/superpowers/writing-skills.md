@@ -1,1 +1,0 @@
-/home/raman/.superpowers/skills/writing-skills//SKILL.md

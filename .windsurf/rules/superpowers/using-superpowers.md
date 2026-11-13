@@ -1,1 +1,0 @@
-/home/raman/.superpowers/skills/using-superpowers//SKILL.md

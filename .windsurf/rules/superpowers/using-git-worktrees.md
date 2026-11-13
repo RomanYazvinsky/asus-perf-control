@@ -1,1 +1,0 @@
-/home/raman/.superpowers/skills/using-git-worktrees//SKILL.md

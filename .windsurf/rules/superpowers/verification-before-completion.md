@@ -1,1 +1,0 @@
-/home/raman/.superpowers/skills/verification-before-completion//SKILL.md

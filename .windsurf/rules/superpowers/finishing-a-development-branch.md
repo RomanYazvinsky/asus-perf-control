@@ -1,1 +1,0 @@
-/home/raman/.superpowers/skills/finishing-a-development-branch//SKILL.md
