@@ -8,5 +8,6 @@ pub mod gpu;
 pub mod performance;
 pub mod services;
 pub mod tdp;
+pub mod telemetry;
 pub mod updates;
 pub mod xg_diag;

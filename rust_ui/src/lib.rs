@@ -1,5 +1,6 @@
 //! ASUS Linux Control desktop application (egui).
 
+pub mod activation;
 pub mod app;
 pub mod backend;
 pub mod features;

@@ -314,10 +314,13 @@ dependencies = [
  "egui",
  "env_logger",
  "log",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "wayland-client",
+ "wayland-protocols",
  "zbus 4.4.0",
 ]
 

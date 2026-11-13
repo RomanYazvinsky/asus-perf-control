@@ -5,7 +5,8 @@ mod hotkey_agent;
 
 use futures_util::{future::BoxFuture, stream};
 use hotkey_agent::{
-    activate_app, process_signals, ActivationGate, CommandRunner, ProcessCommandRunner,
+    activate_app, is_gnome_session, process_signals, with_custom_keybinding, ActivationGate,
+    CommandRunner, ProcessCommandRunner, GNOME_SHORTCUT_PATH,
 };
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -201,4 +202,23 @@ fn production_gate_is_async_timeout_bounded_and_daemon_is_activated_before_subsc
 
     assert!(source.contains("tokio::time::timeout"));
     assert!(startup_call < subscribe);
+}
+
+#[test]
+fn detects_gnome_sessions() {
+    assert!(is_gnome_session(Some("GNOME")));
+    assert!(is_gnome_session(Some("ubuntu:GNOME")));
+    assert!(!is_gnome_session(Some("KDE")));
+    assert!(!is_gnome_session(None));
+}
+
+#[test]
+fn adds_gnome_shortcut_path_once() {
+    let ours = GNOME_SHORTCUT_PATH;
+    assert_eq!(with_custom_keybinding("@as []", ours), Some(format!("['{ours}']")));
+    assert_eq!(
+        with_custom_keybinding("['/custom0/', '/custom1/']", ours),
+        Some(format!("['/custom0/', '/custom1/', '{ours}']"))
+    );
+    assert_eq!(with_custom_keybinding(&format!("['/custom0/', '{ours}']"), ours), None);
 }

@@ -14,6 +14,7 @@ use super::fan::{FanCurveData, FanCurvePoint, FanEngineConfig, FanId, FanInfo, F
 use super::gpu::{self, GpuConfiguration, GpuMode, GpuService, GpuStatus};
 use super::performance::PerformanceService;
 use super::tdp::{self, TdpConfig, TdpService};
+use super::telemetry::{Telemetry, TelemetryService};
 use super::updates::{PackageUpdateBackend, PackageUpdateService, PackageUpdateStatus};
 use super::xg_diag::{custom_curve, XgFanCurvePort, XgPlatformProfilePort};
 use crate::backend::Backend;
@@ -219,6 +220,30 @@ impl PackageUpdateService for Services {
 
     async fn cancel_update(&self, update_id: &str) -> Result<bool> {
         self.backend.daemon.cancel_update(update_id).await
+    }
+}
+
+#[async_trait]
+impl TelemetryService for Services {
+    async fn sample_telemetry(&self) -> Telemetry {
+        // sysfs reads and nvidia-smi block, keep them off the async workers.
+        let sensors = tokio::task::spawn_blocking(|| {
+            use asus_linux_control_core::services::{cpu, gpu, temp};
+            Telemetry {
+                cpu_name: cpu::read_cpu_name(),
+                cpu_temp_c: temp::read_cpu_temp().ok(),
+                cpu_mhz: cpu::read_cpu_freq_mhz(),
+                gpus: gpu::read_gpus(),
+                fan_rpms: read_fan_rpms(),
+                performance_mode: None,
+            }
+        })
+        .await
+        .unwrap_or_default();
+        Telemetry {
+            performance_mode: self.backend.asusd.get_performance_mode().await.ok(),
+            ..sensors
+        }
     }
 }
 

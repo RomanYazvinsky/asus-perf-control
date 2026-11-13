@@ -14,6 +14,16 @@ const SEAT0_PATH: &str = "/org/freedesktop/login1/seat/seat0";
 const SEAT_INTERFACE: &str = "org.freedesktop.login1.Seat";
 const SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
 
+// On GNOME the ROG key (KEY_PROG1 = XF86Launch1) is bound as a custom shortcut instead: only a
+// launch from a shell-handled shortcut carries the XDG_ACTIVATION_TOKEN that lets the window
+// come to the foreground under Wayland focus-stealing prevention.
+const MEDIA_KEYS_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
+const CUSTOM_KEYBINDING_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
+pub const GNOME_SHORTCUT_PATH: &str = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/asus-linux-control/";
+const ROG_KEYSYM: &str = "XF86Launch1";
+// Started directly (not via gtk-launch) so the app receives GNOME's activation token.
+const APP_COMMAND: &str = "asus-linux-control";
+
 pub trait CommandRunner {
     fn run<'a>(&'a mut self, program: &'a str, args: &'a [&'a str]) -> BoxFuture<'a, Result<()>>;
 }
@@ -111,6 +121,53 @@ pub async fn activate_app(runner: &mut impl CommandRunner) -> Result<()> {
     runner.run("gtk-launch", &["asus-linux-control"]).await
 }
 
+/// `XDG_CURRENT_DESKTOP` is a colon-separated list, e.g. `ubuntu:GNOME`.
+pub fn is_gnome_session(current_desktop: Option<&str>) -> bool {
+    current_desktop.is_some_and(|desktops| desktops.split(':').any(|d| d.eq_ignore_ascii_case("GNOME")))
+}
+
+/// Adds `path` to a `gsettings get ... custom-keybindings` value (`@as []` or `['/a/', '/b/']`).
+/// Returns `None` when it is already listed.
+pub fn with_custom_keybinding(current: &str, path: &str) -> Option<String> {
+    let list = current.trim().trim_start_matches("@as").trim();
+    let list = list.strip_prefix('[').and_then(|l| l.strip_suffix(']')).unwrap_or("");
+    let mut paths: Vec<String> = list
+        .split(',')
+        .map(|p| p.trim().trim_matches('\'').to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if paths.iter().any(|p| p == path) {
+        return None;
+    }
+    paths.push(path.to_string());
+    let quoted: Vec<String> = paths.iter().map(|p| format!("'{p}'")).collect();
+    Some(format!("[{}]", quoted.join(", ")))
+}
+
+async fn gsettings(args: &[&str]) -> Result<String> {
+    let output = tokio::time::timeout(COMMAND_TIMEOUT, tokio::process::Command::new("gsettings").args(args).output())
+        .await
+        .context("gsettings timed out")?
+        .context("failed to run gsettings")?;
+    if !output.status.success() {
+        anyhow::bail!("gsettings {args:?} failed: {}", String::from_utf8_lossy(&output.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Binds the ROG key to the app as a GNOME custom shortcut (idempotent).
+pub async fn ensure_gnome_shortcut() -> Result<()> {
+    let schema = format!("{CUSTOM_KEYBINDING_SCHEMA}:{GNOME_SHORTCUT_PATH}");
+    gsettings(&["set", &schema, "name", "ASUS Linux Control"]).await?;
+    gsettings(&["set", &schema, "command", APP_COMMAND]).await?;
+    gsettings(&["set", &schema, "binding", ROG_KEYSYM]).await?;
+    let current = gsettings(&["get", MEDIA_KEYS_SCHEMA, "custom-keybindings"]).await?;
+    if let Some(updated) = with_custom_keybinding(&current, GNOME_SHORTCUT_PATH) {
+        gsettings(&["set", MEDIA_KEYS_SCHEMA, "custom-keybindings", &updated]).await?;
+    }
+    Ok(())
+}
+
 pub async fn process_signals<S, T>(
     mut signals: S,
     runner: &mut impl CommandRunner,
@@ -140,6 +197,20 @@ where
 }
 
 pub async fn run() -> Result<()> {
+    if is_gnome_session(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref()) {
+        match ensure_gnome_shortcut().await {
+            Ok(()) => {
+                log::info!("ROG key is bound to ASUS Linux Control as a GNOME shortcut ({ROG_KEYSYM})");
+                // GNOME launches the app; launching it here as well would race the shortcut's
+                // focused activation with an unfocused one.
+                return std::future::pending().await;
+            }
+            Err(error) => {
+                log::warn!("failed to register GNOME shortcut, launching the app on ROG key signals instead: {error:#}");
+            }
+        }
+    }
+
     let connection = zbus::Connection::system()
         .await
         .context("failed to connect ROG hotkey agent to the system bus")?;

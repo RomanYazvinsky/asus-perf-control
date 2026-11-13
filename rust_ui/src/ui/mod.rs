@@ -4,6 +4,7 @@ pub mod alert;
 pub mod curve_editor;
 pub mod screens;
 pub mod theme;
+pub mod toolbar;
 pub mod widgets;
 
 use std::sync::Arc;

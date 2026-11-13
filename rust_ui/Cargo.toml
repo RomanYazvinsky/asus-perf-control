@@ -20,6 +20,11 @@ asus_linux_control_core = { path = "../rust_core" }
 eframe = "0.36"
 egui = "0.36"
 
+# Raising the window with a compositor-issued xdg-activation token (see src/activation.rs).
+raw-window-handle = "0.6"
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
 async-trait = "0.1"

@@ -4,17 +4,19 @@ use std::sync::Arc;
 
 use egui::{Align, Align2, FontId, Layout, Vec2};
 
+use crate::activation;
 use crate::features::services::Services;
 use crate::input::{AppCommands, InputBridge};
 use crate::logging::log_event;
 use crate::runtime::Runtime;
 use crate::settings::{update_settings, AppSettingsStore, FileAppSettingsStore, FileHardwareProfileStore, ProfiledAppSettingsStore};
-use crate::single_instance::PrimaryInstance;
+use crate::single_instance::{Activation, PrimaryInstance};
 use crate::ui::alert::{show_alerts, Alert};
 use crate::ui::screens::{
     battery::BatteryScreen, fan::FanScreen, gpu::GpuScreen, home::HomeScreen, profiles::ProfilesScreen, tdp::TdpScreen,
     updates::UpdatesScreen, xg_diag::XgDiagScreen,
 };
+use crate::ui::toolbar::{self, Toolbar};
 use crate::ui::{theme, widgets, AppStore, ScreenCtx};
 
 const DESTINATIONS: [(&str, &str); 8] = [
@@ -59,9 +61,12 @@ pub struct AsusApp {
     xg_diag: XgDiagScreen,
     updates: UpdatesScreen,
     profiles: ProfilesScreen,
+    toolbar: Toolbar,
     input: InputBridge,
     commands: AppCommands,
     instance: Option<PrimaryInstance>,
+    /// Token this process was launched with; used to raise the first window.
+    startup_activation: Option<Activation>,
 }
 
 macro_rules! screen_ctx {
@@ -79,6 +84,7 @@ impl AsusApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         instance: Option<PrimaryInstance>,
+        activation_token: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         theme::apply(&cc.egui_ctx);
         if let Some(instance) = &instance {
@@ -127,9 +133,11 @@ impl AsusApp {
             xg_diag,
             updates,
             profiles,
+            toolbar: Toolbar::default(),
             input: InputBridge::default(),
             commands: AppCommands::default(),
             instance,
+            startup_activation: activation_token.map(|token| Activation { token: Some(token) }),
         })
     }
 
@@ -169,6 +177,21 @@ impl AsusApp {
     }
 }
 
+/// Brings the window to the foreground. With an activation token the compositor raises and
+/// focuses it; without one (or off Wayland) a plain focus request is sent, which GNOME on Wayland
+/// answers with an "is ready" notification only.
+fn raise_window(ctx: &egui::Context, frame: &eframe::Frame, request: Activation) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    if let Some(token) = request.token {
+        match activation::activate(frame, &token) {
+            Ok(()) => return,
+            Err(e) => log::warn!("xdg-activation with launcher token failed, falling back to focus request: {e:#}"),
+        }
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+}
+
 /// Navigation rail destination: large icon above a single-line label.
 fn rail_item(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), egui::Sense::click());
@@ -202,14 +225,17 @@ impl eframe::App for AsusApp {
         self.commands.curve.extend(commands.curve);
     }
 
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.instance.as_ref().is_some_and(PrimaryInstance::take_activation) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let request = self
+            .startup_activation
+            .take()
+            .or_else(|| self.instance.as_ref().and_then(PrimaryInstance::take_activation));
+        if let Some(request) = request {
+            raise_window(ctx, frame, request);
         }
 
         let mut cx = screen_ctx!(self);
+        self.toolbar.poll(&mut cx);
         self.hardware.home.poll(&mut cx);
         self.hardware.tdp.poll(&mut cx);
         self.hardware.gpu.poll(&mut cx);
@@ -228,6 +254,11 @@ impl eframe::App for AsusApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("toolbar")
+            .exact_size(toolbar::HEIGHT)
+            .resizable(false)
+            .frame(egui::Frame::new().fill(theme::SURFACE_CONTAINER).inner_margin(egui::Margin::symmetric(16, 4)))
+            .show(ui, |ui| self.toolbar.ui(ui));
         egui::Panel::left("navigation")
             .exact_size(104.0)
             .resizable(false)
